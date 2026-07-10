@@ -1,0 +1,73 @@
+# ── Stage 1: Build Go proxy daemon ──
+FROM golang:1.22-alpine AS go-build
+WORKDIR /build
+COPY go/ ./go/
+WORKDIR /build/go
+RUN go build -ldflags="-s -w" -o /out/mitm-proxies ./cmd/mitm-proxies
+
+# ── Stage 2: Build frontend (same as main Dockerfile) ──
+FROM node:20-alpine AS frontend-build
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 3: Python runtime + Go binary ──
+FROM python:3.12-slim
+LABEL maintainer="mitm-proxy"
+LABEL description="MITM Proxy — hybrid Python+Go build"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+COPY certs/ /certs/
+RUN if ls /certs/*.crt /certs/*.pem 2>/dev/null; then \
+        cp /certs/*.crt /usr/local/share/ca-certificates/ 2>/dev/null || true; \
+        for f in /certs/*.pem; do \
+            [ -f "$f" ] && cp "$f" "/usr/local/share/ca-certificates/$(basename "$f" .pem).crt"; \
+        done; \
+        update-ca-certificates; \
+        echo "Custom CA certs installed at build time"; \
+    else \
+        echo "No certs found in certs/"; \
+    fi
+
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install --with-deps chromium \
+    && (playwright install msedge || echo "msedge unavailable (likely arm64); edge-real mode disabled")
+
+COPY backend/ ./backend/
+COPY config/ ./config/
+COPY --from=frontend-build /build/dist/ ./static/
+COPY --from=go-build /out/mitm-proxies /app/mitm-proxies
+
+RUN mkdir -p /data /screenshots
+VOLUME /data
+VOLUME /screenshots
+
+ENV DATA_DIR=/data
+ENV CERTS_DIR=/certs
+ENV PYTHONUNBUFFERED=1
+ENV HOST=0.0.0.0
+# Go daemon takes over reverse proxy by default in this image
+ENV DISABLE_PYTHON_REVPROXY=true
+# Python auth_proxy.py has full CONNECT/HTTPS MITM with dynamic cert gen;
+# Go's version is HTTP-injection only, so cede port 3128 to Python on demand.
+ENV DISABLE_GO_AUTHPROXY=true
+ENV PYTHON_BASE_URL=http://127.0.0.1:8092
+ENV INTERNAL_SECRET=dev-internal-secret
+
+EXPOSE 8091 8092 8000 8085 3100-3199
+
+COPY entrypoint_hybrid.sh /app/entrypoint_hybrid.sh
+RUN chmod +x /app/entrypoint_hybrid.sh
+
+CMD ["/app/entrypoint_hybrid.sh"]

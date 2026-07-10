@@ -1,0 +1,180 @@
+# nginx site config for the mitm-proxy landing page + optional dashboard
+# reverse-proxy. Targets example.com — replace server_name and the
+# Let's Encrypt paths for other hosts.
+#
+# Drop into: /etc/nginx/sites-available/mitm-landing
+# Enable:    sudo ln -s /etc/nginx/sites-available/mitm-landing /etc/nginx/sites-enabled/
+# Test:      sudo nginx -t
+# Reload:    sudo systemctl reload nginx
+#
+# ── One-time basic-auth setup ────────────────────────────────────────────
+#     sudo apt install -y apache2-utils
+#     sudo htpasswd -c /etc/nginx/.htpasswd admin       # first user (creates)
+#     sudo htpasswd    /etc/nginx/.htpasswd alice       # extra users (append)
+#     sudo chown root:www-data /etc/nginx/.htpasswd
+#     sudo chmod 640           /etc/nginx/.htpasswd
+# No apache2-utils? openssl works too:
+#     printf "admin:$(openssl passwd -apr1 'your-password')\n" \
+#         | sudo tee /etc/nginx/.htpasswd
+
+# ── HTTPS (443) ──────────────────────────────────────────────────────────
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name example.com www.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/www.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/www.example.com/privkey.pem;
+
+    # Modern defaults. Certbot usually drops equivalents in
+    # /etc/letsencrypt/options-ssl-nginx.conf — if that file is included
+    # elsewhere, you can remove the ssl_* lines below.
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Landing page lives here — copy pages/proxy-3129.html into /var/www/html.
+    root  /var/www/html;
+    index proxy-3129.html index.html;
+
+    # Basic auth on the whole vhost; every location inherits.
+    auth_basic           "mitm-proxy — restricted";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # ── Short-URL redirects to the proxy ports ───────────────────────────
+    # These issue a 302 that points the browser at the proxy host:port. They
+    # are NOT a proxy themselves — the browser is expected to already have
+    # the proxy configured (FoxyProxy / system proxy). Hitting these URLs
+    # just gives a memorable link that lands the browser on the proxy, which
+    # is useful as a "does my proxy routing work?" probe.
+    location = /proxy   { return 302 http://$host:3129/; }   # Go test proxy
+    location = /3129    { return 302 http://$host:3129/; }
+    location = /mitm    { return 302 http://$host:3128/; }   # Python MITM
+    location = /3128    { return 302 http://$host:3128/; }
+
+    # Optional: expose the :8092 debug dashboard via /dashboard/. Comment out
+    # if you want to keep :8092 loopback-only. This one IS a reverse proxy
+    # because the dashboard is a real HTTP service (not an HTTP proxy).
+    location /dashboard/ {
+        proxy_pass         http://127.0.0.1:8092/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # ── Reverse-proxy the main app on :8091 ──────────────────────────────
+    # Path-based mount. Browsers hit https://example.com/tp8091/... and
+    # nginx transparently forwards to http://127.0.0.1:8091/...  (trailing
+    # slash on proxy_pass strips the /tp8091/ prefix).
+    #
+    # WebSocket-friendly headers are set so the /api/browser/session WS works.
+    #
+    # Caveat: the SPA at :8091 references its hashed bundles under
+    # /proxy-assets/ (not the Vite-default /assets/) so this vhost can host
+    # a sibling SPA that owns /assets/. The /proxy-assets/ and /api/
+    # sibling locations below are companions to /tp8091/. If you remove
+    # this block, also remove them.
+    #
+    # `^~` on each prefix is critical when the vhost also has a
+    # `location ~* \.(js|css|...)$` regex block — without it, the regex
+    # would win and these proxied requests would 404.
+    location ^~ /tp8091/ {
+        proxy_pass         http://127.0.0.1:8091/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 24h;   # WebSocket sessions can stay open indefinitely
+        proxy_send_timeout 24h;
+    }
+
+    # SPA assets + API routes for the app above — kept at their original paths
+    # so the SPA's hardcoded /proxy-assets/* and /api/* URLs resolve correctly.
+    location ^~ /proxy-assets/ {
+        proxy_pass         http://127.0.0.1:8091/proxy-assets/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location ^~ /api/ {
+        proxy_pass         http://127.0.0.1:8091/api/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 24h;
+        proxy_send_timeout 24h;
+    }
+
+    # Never auth-gate Let's Encrypt renewal challenges, or certbot renewal
+    # will fail the next time it runs.
+    location ^~ /.well-known/acme-challenge/ {
+        auth_basic off;
+        root       /var/www/html;
+    }
+}
+
+# ── HTTP → HTTPS redirect (80) ───────────────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name example.com www.example.com;
+
+    # Let ACME validators through without being redirected.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ── Dedicated subdomain for the app (alternative to /app/ above) ─────────
+# Uncomment this block to mount the full app at https://app.example.com/
+# without any path prefix — the SPA's hardcoded /assets/... URLs resolve
+# cleanly because the app owns the entire vhost.
+#
+# Prerequisites:
+#   1. DNS: add an A/AAAA record for app.example.com pointing at this host.
+#   2. TLS cert covering app.example.com — easiest path:
+#        sudo certbot --nginx -d app.example.com \
+#                     --expand -d example.com -d www.example.com
+#      (--expand adds the new name to the existing cert.)
+#
+# server {
+#     listen 443 ssl http2;
+#     listen [::]:443 ssl http2;
+#     server_name app.example.com;
+#
+#     ssl_certificate     /etc/letsencrypt/live/www.example.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/www.example.com/privkey.pem;
+#
+#     auth_basic           "mitm-proxy app — restricted";
+#     auth_basic_user_file /etc/nginx/.htpasswd;
+#
+#     location / {
+#         proxy_pass         http://127.0.0.1:8091;
+#         proxy_http_version 1.1;
+#         proxy_set_header   Host              $host;
+#         proxy_set_header   Upgrade           $http_upgrade;
+#         proxy_set_header   Connection        "upgrade";
+#         proxy_set_header   X-Forwarded-For   $remote_addr;
+#         proxy_set_header   X-Forwarded-Proto $scheme;
+#         proxy_read_timeout 24h;
+#         proxy_send_timeout 24h;
+#     }
+# }

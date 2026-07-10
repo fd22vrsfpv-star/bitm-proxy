@@ -1,0 +1,23 @@
+# Node — prevent WSL2/macOS node_modules from overwriting Docker-installed copies
+frontend/node_modules/
+frontend/dist/
+
+# macOS resource forks (break permissions in Docker)
+._*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Runtime data
+*.log
+config/config.json
+
+# IDE / tooling
+.vscode/
+.idea/
+.claude/
+.git/

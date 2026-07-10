@@ -1,0 +1,7 @@
+{
+  "slack_keepalive_webhook": "REPLACE_WITH_YOUR_SLACK_WEBHOOK_URL",
+  "slack_capture_webhook": "REPLACE_WITH_YOUR_SLACK_WEBHOOK_URL",
+  "keepalive_enabled": true,
+  "keepalive_interval_minutes": 5,
+  "default_login_url": "https://myapps.microsoft.com"
+}

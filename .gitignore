@@ -1,0 +1,50 @@
+# macOS resource forks
+._*
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Build artifacts
+# (static/ is intentionally checked in so production installs don't
+# need node/npm to serve the dashboard SPA.)
+_build/
+.local/
+
+# Certs (user-specific)
+certs/*.crt
+certs/*.pem
+certs/*.cer
+
+# Config (contains webhook secrets)
+config/config.json
+config/slack_*.txt
+
+# Claude Code local settings
+.claude/
+
+# Data (runtime)
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Phantom Join / ROADtools — engagement-specific artifacts that must
+# never land in git. See tools/README_Phantom.md.
+.roadtools_auth*
+roadtx.prt
+*.rtdevice
+roadrecon.db
+roadrecon.db-journal
+phantom_join_*/
+*.intunewin
+findings_*.json

@@ -1,0 +1,187 @@
+"""RAG Scan Stack-compatible API — exposes captured login flows as findings.
+
+Implements the subset of the RAG API endpoints that the Burp extension
+(`burp-extension/RagScanBridge.py`) calls, so users can point that extension
+directly at this service with no external backend required.
+
+Captured browser flows are converted to a single finding each
+(`trace_flow_for_{hostname}`), with the full request/response sequence
+embedded as evidence and the first exchange populated as `request_raw` /
+`response_raw` for Burp's message viewer.
+
+Runs on port 8000 by default (matching the Burp extension's default URL).
+No auth — intended for local use. Reconfigure the port via `RAG_PORT` env var.
+"""
+
+from __future__ import annotations
+
+import time
+from collections import defaultdict
+from typing import Any
+
+from fastapi import FastAPI, Request, Query
+
+from backend.shared import _session_flows, append_log
+from backend.rag_bridge import _build_finding, _flow_hostname
+
+
+app = FastAPI(title="MITM Proxy — RAG API", version="1.0.0")
+
+
+# In-memory buffer for findings imported from external sources (e.g. Burp export)
+_imported_findings: list[dict] = []
+
+
+def _all_findings() -> list[dict]:
+    """Build findings from all captured session flows, plus imports."""
+    findings: list[dict] = []
+    for session_id, buf in _session_flows.items():
+        entries = list(buf)
+        if not entries:
+            continue
+        try:
+            f = _build_finding(session_id, entries)
+            findings.append(f)
+        except Exception as e:
+            append_log("warn", "rag_api",
+                       f"finding build failed for {session_id}: {e}")
+    findings.extend(_imported_findings)
+    return findings
+
+
+def _match(finding: dict, target: str, severity: str, source: str,
+           engagement_id: str) -> bool:
+    if target:
+        url = finding.get("url", "")
+        if target not in url:
+            return False
+    if severity and severity != "all":
+        if finding.get("severity", "info") != severity:
+            return False
+    if source:
+        # source may be comma-separated OR repeated ?source=
+        wanted = [s.strip() for s in source.split(",") if s.strip()]
+        if wanted and finding.get("source", "").lower() not in [w.lower() for w in wanted]:
+            return False
+    if engagement_id:
+        if finding.get("engagement_id", "") != engagement_id:
+            return False
+    return True
+
+
+@app.get("/health")
+async def health():
+    n = sum(len(buf) for buf in _session_flows.values())
+    return {
+        "ok": True,
+        "status": "ok",
+        "service": "mitm-proxy",
+        "database": {"tables_found": 1, "flow_exchanges": n,
+                     "active_sessions": len(_session_flows)},
+    }
+
+
+@app.get("/scope/names")
+async def scope_names():
+    # Treat each captured session's hostname as a scope name
+    names = []
+    for sid, buf in _session_flows.items():
+        entries = list(buf)
+        if not entries:
+            continue
+        host = _flow_hostname(entries)
+        names.append({"name": host, "target_count": 1})
+    return {"names": names}
+
+
+@app.get("/scope")
+async def scope(name: str = ""):
+    targets = []
+    for sid, buf in _session_flows.items():
+        entries = list(buf)
+        if not entries:
+            continue
+        host = _flow_hostname(entries)
+        if name and host != name:
+            continue
+        targets.append({"target": host, "target_type": "hostname", "session_id": sid})
+    return {"targets": targets}
+
+
+@app.get("/engagements")
+async def engagements():
+    # Single default engagement representing this mitm-proxy instance
+    return {"engagements": [
+        {"id": "mitm-proxy", "name": "MITM Proxy sessions", "scope_name": ""},
+    ]}
+
+
+@app.get("/engagements/{eng_id}")
+async def engagement_detail(eng_id: str):
+    if eng_id != "mitm-proxy":
+        return {"error": "not found"}
+    return {"id": "mitm-proxy", "name": "MITM Proxy sessions", "scope_name": ""}
+
+
+@app.get("/findings/search")
+async def findings_search(
+    request: Request,
+    limit: int = Query(100),
+    offset: int = Query(0),
+    ip: str = Query(""),
+    severity: str = Query(""),
+    engagement_id: str = Query(""),
+):
+    # source may appear multiple times
+    sources = ",".join(request.query_params.getlist("source"))
+    all_f = _all_findings()
+    filtered = [f for f in all_f
+                if _match(f, ip, severity, sources, engagement_id)]
+    by_severity = defaultdict(int)
+    by_source = defaultdict(int)
+    for f in filtered:
+        by_severity[f.get("severity", "info")] += 1
+        by_source[f.get("source", "unknown")] += 1
+    return {
+        "total": len(filtered),
+        "findings": filtered[offset:offset + limit],
+        "aggregations": {
+            "by_severity": dict(by_severity),
+            "by_source": dict(by_source),
+        },
+    }
+
+
+@app.get("/export/findings-exchange")
+async def export_findings_exchange(
+    request: Request,
+    limit: int = Query(500),
+    target: str = Query(""),
+    severity: str = Query(""),
+    engagement_id: str = Query(""),
+):
+    sources = ",".join(request.query_params.getlist("source"))
+    all_f = _all_findings()
+    filtered = [f for f in all_f
+                if _match(f, target, severity, sources, engagement_id)]
+    return {"findings": filtered[:limit], "total": len(filtered)}
+
+
+@app.post("/import/findings-exchange")
+async def import_findings_exchange(body: dict):
+    findings = body.get("findings", [])
+    source = body.get("source", "external")
+    imported = 0
+    skipped = 0
+    for f in findings:
+        if not isinstance(f, dict):
+            skipped += 1
+            continue
+        f.setdefault("source", source)
+        f.setdefault("captured_at", time.time())
+        _imported_findings.append(f)
+        imported += 1
+    append_log("info", "rag_api",
+               f"Imported {imported} findings from {source} ({skipped} skipped)")
+    return {"imported": imported, "skipped": skipped,
+            "total_stored": len(_imported_findings)}

