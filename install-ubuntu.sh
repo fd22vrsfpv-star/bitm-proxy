@@ -1,5 +1,5 @@
 #!/bin/bash
-# Complete installer for mitm-proxy on Ubuntu (22.04+ / 24.04).
+# Complete installer for bitm-proxy on Ubuntu (22.04+ / 24.04).
 #
 # What it does (idempotent — safe to re-run):
 #   1. Installs apt dependencies: python3.12 + venv, nodejs 20, golang,
@@ -7,14 +7,14 @@
 #   2. Installs PowerShell (pwsh) + the Az.Accounts module — needed for
 #      the AAA runner endpoints (/api/aaa/run, /api/aaa/login). Both
 #      installs are best-effort; the proxy still runs without them.
-#   3. Creates a dedicated service user `mitm-proxy` (system user, no shell).
-#   4. Syncs the project to /opt/mitm-proxy (from this repo checkout, or
+#   3. Creates a dedicated service user `bitm-proxy` (system user, no shell).
+#   4. Syncs the project to /opt/bitm-proxy (from this repo checkout, or
 #      clones $REPO_URL if run standalone).
 #   5. Builds: Python venv + pip install, Playwright Chromium + Edge
 #      channel, frontend via npm, Go daemon binary.
-#   6. Creates /var/lib/mitm-proxy as the data directory, chown'd to the
-#      service user. Certs go in /opt/mitm-proxy/certs.
-#   7. Installs a hardened /etc/systemd/system/mitm-proxy.service unit.
+#   6. Creates /var/lib/bitm-proxy as the data directory, chown'd to the
+#      service user. Certs go in /opt/bitm-proxy/certs.
+#   7. Installs a hardened /etc/systemd/system/bitm-proxy.service unit.
 #   8. Enables + starts the service.
 #
 # Usage:
@@ -27,26 +27,26 @@
 #   sudo ./install-ubuntu.sh --purge         # remove everything incl. data dir
 #
 # Environment overrides:
-#   APP_DIR        (default /opt/mitm-proxy)
-#   DATA_DIR       (default /var/lib/mitm-proxy)
-#   SERVICE_USER   (default mitm-proxy)
+#   APP_DIR        (default /opt/bitm-proxy)
+#   DATA_DIR       (default /var/lib/bitm-proxy)
+#   SERVICE_USER   (default bitm-proxy)
 #   BIND_HOST      (default 127.0.0.1 — set 0.0.0.0 to expose on LAN,
 #                   but put nginx + TLS + basic-auth in front if you do)
-#   REPO_URL       (default https://github.com/raptordoug/bitm-proxy.git,
+#   REPO_URL       (default https://github.com/fd22vrsfpv-star/bitm-proxy.git,
 #                   only used when script is run outside a repo checkout)
 #   GO_VERSION     (default 1.22.10)
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/mitm-proxy}"
-DATA_DIR="${DATA_DIR:-/var/lib/mitm-proxy}"
-SERVICE_USER="${SERVICE_USER:-mitm-proxy}"
+APP_DIR="${APP_DIR:-/opt/bitm-proxy}"
+DATA_DIR="${DATA_DIR:-/var/lib/bitm-proxy}"
+SERVICE_USER="${SERVICE_USER:-bitm-proxy}"
 SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
-REPO_URL="${REPO_URL:-https://github.com/raptordoug/bitm-proxy.git}"
+REPO_URL="${REPO_URL:-https://github.com/fd22vrsfpv-star/bitm-proxy.git}"
 GO_VERSION="${GO_VERSION:-1.22.10}"
-UNIT_PATH="/etc/systemd/system/mitm-proxy.service"
-UNIT_NAME="mitm-proxy"
+UNIT_PATH="/etc/systemd/system/bitm-proxy.service"
+UNIT_NAME="bitm-proxy"
 
 ACTION="install"
 case "${1:-install}" in
@@ -249,7 +249,7 @@ fi
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
     log "Creating service user $SERVICE_USER"
     useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin \
-            --comment "mitm-proxy service" "$SERVICE_USER"
+            --comment "bitm-proxy service" "$SERVICE_USER"
 fi
 
 # ── Sync source into APP_DIR ───────────────────────────────────────────────
@@ -333,11 +333,11 @@ fi
 
 # ── Go daemon build ────────────────────────────────────────────────────────
 if [ -d "$APP_DIR/go" ]; then
-    log "Building Go daemon -> $APP_DIR/.local/mitm-proxies"
+    log "Building Go daemon -> $APP_DIR/.local/bitm-proxies"
     mkdir -p "$APP_DIR/.local"
     (
         cd "$APP_DIR/go"
-        /usr/local/go/bin/go build -o "$APP_DIR/.local/mitm-proxies" ./cmd/mitm-proxies
+        /usr/local/go/bin/go build -o "$APP_DIR/.local/bitm-proxies" ./cmd/bitm-proxies
     )
 fi
 
@@ -352,7 +352,7 @@ chmod 750 "$DATA_DIR"
 log "Writing $UNIT_PATH"
 cat > "$UNIT_PATH" <<EOF
 [Unit]
-Description=MITM Proxy — remote browser login + API testing
+Description=BITM Proxy — remote browser login + API testing
 Documentation=file://$APP_DIR/README.md
 After=network-online.target
 Wants=network-online.target
@@ -418,7 +418,7 @@ fi
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
-  MITM Proxy installed
+  BITM Proxy installed
 ────────────────────────────────────────────────────────────
   Service:     systemctl status $UNIT_NAME
   Logs:        journalctl -u $UNIT_NAME -f
@@ -432,7 +432,7 @@ cat <<EOF
     Debug:     http://$BIND_HOST:8092/
     RAG API:   http://$BIND_HOST:8000/
     Rev proxy: http://$BIND_HOST:8085/
-    Auth MITM: http://$BIND_HOST:3128/   (authorized pentest use only)
+    Auth BITM: http://$BIND_HOST:3128/   (authorized pentest use only)
 
 EOF
 if [ -n "$API_KEY" ]; then

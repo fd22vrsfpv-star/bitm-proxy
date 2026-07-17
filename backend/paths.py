@@ -9,9 +9,9 @@ def _default_app_dir() -> Path:
     """Return the default application data directory."""
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        return base / "MitmProxy"
+        return base / "BitmProxy"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "MitmProxy"
+        return Path.home() / "Library" / "Application Support" / "BitmProxy"
     # Docker / Linux — use legacy paths
     return Path("/data")
 

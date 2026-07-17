@@ -1,0 +1,10 @@
+# Force LF for files that get copied into Linux containers and executed
+# there. Without this, a Windows checkout with core.autocrlf=true silently
+# rewrites these to CRLF, which breaks `#!/bin/bash`-style shebangs inside
+# the container ("bad interpreter" errors) even though everything looks fine
+# on the Windows host.
+*.sh              text eol=lf
+Dockerfile*       text eol=lf
+docker-compose.yml text eol=lf
+entrypoint*.sh    text eol=lf
+nginx/*           text eol=lf

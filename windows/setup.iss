@@ -1,4 +1,4 @@
-; MITM Proxy - Inno Setup installer script
+; BITM Proxy - Inno Setup installer script
 ; Bundles the pre-built app (Python venv, frontend, backend, Playwright browsers)
 ; into a single Windows installer EXE.
 ;
@@ -9,14 +9,14 @@
 #endif
 
 [Setup]
-AppName=MITM Proxy
+AppName=BITM Proxy
 AppVersion=1.0.0
-AppPublisher=MITM Proxy
-DefaultDirName={localappdata}\MitmProxy
-DefaultGroupName=MITM Proxy
-UninstallDisplayName=MITM Proxy
+AppPublisher=BITM Proxy
+DefaultDirName={localappdata}\BitmProxy
+DefaultGroupName=BITM Proxy
+UninstallDisplayName=BITM Proxy
 OutputDir={#BuildDir}\Output
-OutputBaseFilename=MitmProxySetup
+OutputBaseFilename=BitmProxySetup
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=lowest
@@ -30,23 +30,23 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; Application files (pre-built in _build\app)
 Source: "{#BuildDir}\app\*"; DestDir: "{app}\app"; Flags: recursesubdirs createallsubdirs
 ; Launcher
-Source: "{#BuildDir}\MitmProxy.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\BitmProxy.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
-Name: "{localappdata}\MitmProxy\data"
-Name: "{localappdata}\MitmProxy\screenshots"
-Name: "{localappdata}\MitmProxy\certs"
+Name: "{localappdata}\BitmProxy\data"
+Name: "{localappdata}\BitmProxy\screenshots"
+Name: "{localappdata}\BitmProxy\certs"
 
 [Icons]
-Name: "{group}\MITM Proxy"; Filename: "{app}\MitmProxy.bat"; WorkingDir: "{app}"
-Name: "{group}\Uninstall MITM Proxy"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\MITM Proxy"; Filename: "{app}\MitmProxy.bat"; WorkingDir: "{app}"
+Name: "{group}\BITM Proxy"; Filename: "{app}\BitmProxy.bat"; WorkingDir: "{app}"
+Name: "{group}\Uninstall BITM Proxy"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\BITM Proxy"; Filename: "{app}\BitmProxy.bat"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\MitmProxy.bat"; Description: "Launch MITM Proxy"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\BitmProxy.bat"; Description: "Launch BITM Proxy"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{localappdata}\MitmProxy\screenshots"
+Type: filesandordirs; Name: "{localappdata}\BitmProxy\screenshots"
 
 [Code]
 // Show a summary page before install
@@ -54,13 +54,13 @@ function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo,
   MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 begin
   Result :=
-    'MITM Proxy will be installed to:' + NewLine +
+    'BITM Proxy will be installed to:' + NewLine +
     Space + ExpandConstant('{app}') + NewLine + NewLine +
     'Data will be stored in:' + NewLine +
-    Space + ExpandConstant('{localappdata}\MitmProxy\data') + NewLine + NewLine +
+    Space + ExpandConstant('{localappdata}\BitmProxy\data') + NewLine + NewLine +
     'After installation:' + NewLine +
     Space + 'Main app:        http://localhost:8091' + NewLine +
     Space + 'Debug dashboard: http://localhost:8092' + NewLine + NewLine +
     'Custom CA certificates (.crt/.pem files):' + NewLine +
-    Space + 'Place in ' + ExpandConstant('{localappdata}\MitmProxy\certs\');
+    Space + 'Place in ' + ExpandConstant('{localappdata}\BitmProxy\certs\');
 end;

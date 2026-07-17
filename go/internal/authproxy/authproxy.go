@@ -2,7 +2,7 @@
 //
 // For plain HTTP, it injects captured Cookie / Authorization / CSRF headers
 // from the Python credentials store (via pyclient).
-// For HTTPS it does CONNECT tunneling. Full TLS MITM with dynamic cert
+// For HTTPS it does CONNECT tunneling. Full TLS BITM with dynamic cert
 // generation is not yet implemented in the Go port — use the Python
 // auth_proxy.py for HTTPS injection if you need it.
 package authproxy
@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mitm-proxy/go/internal/flowclient"
-	"github.com/mitm-proxy/go/internal/pyclient"
+	"github.com/bitm-proxy/go/internal/flowclient"
+	"github.com/bitm-proxy/go/internal/pyclient"
 )
 
 type Server struct {
@@ -45,9 +45,9 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
-	// Plain tunnel; no MITM in Go port v1.
+	// Plain tunnel; no BITM in Go port v1.
 	s.flow.Log("info", "auth_proxy",
-		"TUNNEL "+r.Host+" (no MITM in Go port)", "")
+		"TUNNEL "+r.Host+" (no BITM in Go port)", "")
 
 	dest, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
 	if err != nil {

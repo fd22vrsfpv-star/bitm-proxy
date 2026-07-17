@@ -147,6 +147,15 @@ env var so it never appears on the spawned process's argv (i.e. not
 (`pip install roadrecon roadtx`); the runner's first phase calls
 `roadtx` and exits non-zero if not found, surfaced in the live log.
 
+`phantom_join_allowed_domains` (default `[]`, unrestricted) is a second
+gate checked in `phantom_run_ws()` right after `allow_phantom_join`: if
+non-empty, the requested `domain` param must case-insensitively match an
+entry or the WS returns `{type:"denied"}` before the runner spawns.
+Opt-in hardening for a deployment that must not be pointable at an
+arbitrary real tenant (the DEF CON RTV Lab's public instance) — every
+existing single-operator install is unaffected since the default is
+unrestricted.
+
 
 ### 2. Sub-session
 
@@ -227,9 +236,9 @@ flow-update fanout. Not a "session" in the Playwright sense.
 | Backpressure | Drop-oldest when a client's queue fills (metric: `bus_metrics.dropped`) |
 | First-paint history | `ws_history_lines` (default 500) lines replayed on connect |
 
-### 8. Auth-proxy MITM session
+### 8. Auth-proxy BITM session
 
-A TLS tunnel held by the Python MITM proxy on `:3128`. Used for
+A TLS tunnel held by the Python BITM proxy on `:3128`. Used for
 browsers configured to proxy through us — we forge a per-host
 certificate, intercept, and route through either a Playwright session
 (if `proxy_via_playwright`) or direct.
@@ -259,7 +268,7 @@ owns which session.
 ### 10. Device profile
 
 A reusable, named bundle that fresh Playwright sessions can be launched
-against. Where the auth-proxy MITM session (#8) holds *what's currently
+against. Where the auth-proxy BITM session (#8) holds *what's currently
 flowing through `:3128`*, a device profile is the snapshotted, persisted
 form — re-applicable to any session for any target.
 
@@ -286,7 +295,7 @@ Selectable per-registration in the dashboard's **Devices** tab → *Register fro
   entry. The next GET that flows through `:3128` to that host gets a
   **synthetic 200 OK** page from the proxy that runs JS to read
   timezone / screen / etc, POSTs the result to a sentinel path on the
-  same host (`/__mitm_probe_callback?token=…&device_id=…&host=…`,
+  same host (`/__bitm_probe_callback?token=…&device_id=…&host=…`,
   consumed in-proxy — never touches upstream), then meta-refreshes to
   the original URL. Single-fire; the entry clears on consume.
 - **Probe + cred snapshot** — same as Active probe, plus the probe
@@ -378,10 +387,10 @@ profile (Devices tab → *Edit*) takes effect on the next Launch.
 | Module | `backend/devices.py` (logic), `backend/routes/devices.py` (REST), `backend/routes/browser.py` (launch hooks), `backend/auth_proxy.py:_build_probe_response`/`_handle_probe_callback` (active probe) |
 | Storage | `JsonStore("devices")` → `$DATA_DIR/devices/<id>.{json,enc}`. Encrypted at rest when `CREDENTIAL_PASSPHRASE` is set. |
 | Pending-probe registry | In-memory `_pending_probes: dict[host, {token, device_id, modes, sites, expires}]`; 30-minute TTL. |
-| Sentinel callback path | `/__mitm_probe_callback` — intercepted in both the plain-HTTP and HTTPS-MITM dispatch paths; consumed in-proxy, returns 204; never reaches upstream. |
+| Sentinel callback path | `/__bitm_probe_callback` — intercepted in both the plain-HTTP and HTTPS-BITM dispatch paths; consumed in-proxy, returns 204; never reaches upstream. |
 | WebSocket cmds | `list_devices`, `get_device`, `register_device_from_capture`, `register_device_from_session`, `register_device_manual`, `update_device`, `delete_device`, `launch_with_device`. |
 | REST routes | `GET/POST /api/devices`, `GET /api/devices/presets`, `GET/PATCH/DELETE /api/devices/{id}`, `POST /api/devices/from-capture`, `POST /api/devices/from-session`, `POST /api/devices/probe-callback`. |
-| Logging | All device events land on the `devices` log category with `DEVICE_*` verbs: `DEVICE_REGISTER_MANUAL`, `DEVICE_REGISTER_FROM_CAPTURE`, `DEVICE_REGISTER_FROM_SESSION`, `DEVICE_PROBE_PENDING`, `DEVICE_PROBE_PAGE_SERVED`, `DEVICE_PROBE_APPLIED`, `DEVICE_PROBE_REJECT`, `DEVICE_PROBE_ERROR`, `DEVICE_APPLY_CONTEXT`, `DEVICE_APPLY_POST_LAUNCH`, `DEVICE_LAUNCH_REQUEST`, `DEVICE_UPDATE`, `DEVICE_DELETE`. The dashboard's All-Logs filter and `journalctl -u mitm-proxy -g DEVICE_` both isolate them. Apply-context and apply-post-launch entries also bind to the affected `session_id` so per-session log files surface them. |
+| Logging | All device events land on the `devices` log category with `DEVICE_*` verbs: `DEVICE_REGISTER_MANUAL`, `DEVICE_REGISTER_FROM_CAPTURE`, `DEVICE_REGISTER_FROM_SESSION`, `DEVICE_PROBE_PENDING`, `DEVICE_PROBE_PAGE_SERVED`, `DEVICE_PROBE_APPLIED`, `DEVICE_PROBE_REJECT`, `DEVICE_PROBE_ERROR`, `DEVICE_APPLY_CONTEXT`, `DEVICE_APPLY_POST_LAUNCH`, `DEVICE_LAUNCH_REQUEST`, `DEVICE_UPDATE`, `DEVICE_DELETE`. The dashboard's All-Logs filter and `journalctl -u bitm-proxy -g DEVICE_` both isolate them. Apply-context and apply-post-launch entries also bind to the affected `session_id` so per-session log files surface them. |
 | Related config | `device_probe_enabled` (default `true`) — gates the synthetic-probe interception in `auth_proxy.py`. |
 | UI | Dashboard `:8092` → **Devices** tab. Per-row badges show source / engine / probed / creds×N / mobile. |
 
@@ -435,7 +444,7 @@ a faint left rule.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `browser_type` | `edge` | `edge` (Chromium + Edge UA) / `edge-real` (native msedge) / `chrome` (Chromium). |
+| `browser_type` | `edge` | `edge` (Chromium + Edge UA) / `edge-real` (native msedge, no arm64 Linux build exists) / `chrome` (Chromium + Chrome UA) / `firefox` (real bundled Gecko engine via `_engine_launch()`, not a UA spoof — has a genuine arm64 Linux build, verified live). |
 | `browser_chrome` | `none` | `full` / `minimal` / `none` — which nav controls the :8091 viewer shows. |
 | `private_mode` | `true` | Open each Playwright session in an incognito context (no persisted cookies). |
 | `mobile_emulation` | `off` | `off` / `phone_android` / `phone_ios` / `tablet_*` device emulation. |
@@ -477,7 +486,7 @@ a faint left rule.
 `POST /api/capture/external` accepts a JSON credential bundle from
 pentester-side tooling (Burp extension, separate runner) and writes it
 into the same `credentials` JsonStore + Slack capture channel that the
-in-band MITM auth-proxy uses. Implementation in `backend/routes/capture.py`.
+in-band BITM auth-proxy uses. Implementation in `backend/routes/capture.py`.
 
 Body (only `site_id` is required):
 `site_id`, `user`, `source_url`, `username`, `password`, `tokens`
@@ -488,7 +497,7 @@ replaces existing — mirrors `_merge_manual_capture`), `local_storage`,
 | Key | Default | Purpose |
 |---|---|---|
 | `external_capture_token` | `""` | Bearer token required on every request. Empty disables the endpoint (returns 404). Settable via Configuration tab, `EXTERNAL_CAPTURE_TOKEN` env, or `config/external_capture_token.txt`. |
-| `external_capture_allowed_ips` | `[]` | List of IPs/CIDRs allowed to POST. Loopback is always allowed; remote callers must be on this list. For cross-origin lander deployments (victim browsers post directly), set to `0.0.0.0/0` since the source IP is unpredictable. |
+| `external_capture_allowed_ips` | `[]` | List of IPs/CIDRs allowed to POST. Loopback is always allowed; remote callers must be on this list. For cross-origin lander deployments (victim browsers post directly), set to `0.0.0.0/0` since the source IP is unpredictable. **Check uses the raw TCP peer address, not `X-Forwarded-For`** — behind a reverse proxy (e.g. the DEF CON RTV Lab's nginx), the peer is the proxy's own address, not the real client's. The lab's `config/lab-config.json` pre-seeds this with `docker-compose.yml`'s fixed `lab_net` subnet (`172.28.238.0/24`) for exactly this reason. |
 | `external_capture_cors_origins` | `[]` | List of exact origins allowed to POST cross-origin (e.g. `https://lander.example.com`), or `*` for any origin. Empty = same-origin only (preflights return 403). Required for client-side landers on a separate domain. |
 
 Auth header is either `Authorization: Bearer <token>` or
@@ -509,6 +518,19 @@ Files:
   analytics. Edit the four-field `S` block at the top
   (`g` = site_id, `k` = token, `e` = endpoint, `n` = next URL)
   before deploying.
+- `pages/silent.html` — no form, no visible interaction. Captures a
+  device fingerprint on page load and POSTs it silently, then
+  redirects after ~500ms — drive-by recon rather than credential
+  capture. Same `CONFIG` shape (`site_id`/`token`/`endpoint` +
+  `redirect_url` instead of `next_url`). It also mints a **correlation
+  id** (`getCid()` — reuses an incoming `?cid=`, else `crypto.randomUUID`)
+  , sends it with the capture, and appends it to the redirect, whose lab
+  default is `/start` (the hosted session) — turning silent recon into a
+  funnel that ties the captured device to the follow-on login. See
+  *Silent capture → session correlation* below. In the DEF CON RTV Lab
+  both this and `lander.html` are baked into the app image's
+  `static/` at build time (`Dockerfile`) and reachable via nginx's
+  `/silent` and `/lander` aliases — see `docs/DEFCON-LAB-SETUP.md`.
 
 Both files capture: form inputs + device fingerprint (UA,
 Sec-CH-UA-* via `userAgentData.getHighEntropyValues`, screen,
@@ -521,12 +543,39 @@ cross-origin hosting requires `external_capture_cors_origins` to
 list the page's origin (or `*`), and `external_capture_allowed_ips`
 broadened to cover the browsers that will POST.
 
+### Silent capture → session correlation (`cid`)
+
+A deterministic tie between a silent fingerprint capture and the
+follow-on login session, so a server-side Playwright session replays the
+device signature of the visitor who was fingerprinted (added in 1.27.0).
+The whole chain is keyed on one correlation id (`cid`) carried through
+every hop:
+
+| Hop | What carries the `cid` |
+|---|---|
+| `pages/silent.html` | Mints/reuses `cid`, sends it in the `/api/capture/external` body, appends `?cid=` to the redirect (`/start` in the lab) |
+| `backend/routes/capture.py` | Stores `cid` on the silent capture's credential record |
+| `nginx/rtvbitm` | `location = /start` uses `return 302 /tp8091/$is_args$args` to preserve the query string |
+| `frontend/src/components/BrowserAuth.tsx` | Reads `?cid=` and forwards it as `cid=` on the `/api/browser/session` WebSocket (committed bundle rebuilt into `static/`) |
+| `backend/routes/browser.py` | `browser_session` `?cid=` → `_find_capture_by_cid()` → `devices.find_or_create_for_cid()` builds/reuses a device profile and applies it (only when no explicit `?device_id`/default device wins); links both records; logs `CID_LINK` |
+| `backend/devices.py` | `profile_from_external_fingerprint()` converts the JS-shaped silent fingerprint (`user_agent`, `languages`, `ua_data`, `screen`, `timezone`) into a header-shaped device profile (`User-Agent` + synthesized `sec-ch-ua-*` via the shared `_apply_ua_hints()`), plus viewport/locale/timezone/DSF |
+
+Idempotent per `cid`: a visitor who starts several sessions reuses the
+one device profile (`find_or_create_for_cid` scans for an existing device
+tagged with the `cid`), so there's no Devices-tab churn. The linkage is
+visible both ways — the device carries `cid` + `linked_capture_key`; the
+silent capture carries `linked_device_id` + `linked_session_at`; and any
+credentials the session goes on to capture are stamped with the same
+`cid`. Reset for the event: the per-`cid` device profiles accumulate in
+`$DATA_DIR/devices/` (one per visitor) — clear them alongside the phantom
+devices in the post-event wipe (`docs/DEFCON-LAB-SETUP.md`).
+
 ### Flow / RAG / Ollama (Settings → Integrations)
 
 | Key | Default | Purpose |
 |---|---|---|
 | `rag_enabled` | `false` | Enables "Send to RAG" button on Flow Trace. |
-| `rag_api_url` | `http://localhost:8000` | External RAG Scan Stack endpoint. |
+| `rag_api_url` | `http://localhost:8000` | External RAG Scan Stack endpoint. `submit_flow_as_finding()` (`backend/rag_bridge.py`) auto-corrects a leftover `https://` scheme back to `http://` for `localhost:8000`/`127.0.0.1:8000`/`host.docker.internal:8000`, since the built-in RAG API doesn't terminate TLS — a common misconfig carried over from `burp-extension/RagScanBridge.py`'s own historical default. |
 | `rag_api_key` | `""` | Sent as `x-api-key`. |
 | `rag_engagement_id` | `""` | Optional UUID to attach findings to. |
 | `ollama_enabled` | `false` | Enables the "Analyze (Ollama)" button. |
@@ -565,8 +614,8 @@ broadened to cover the browsers that will POST.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `autostart_auth_proxy` | `true` | Auto-start the Python MITM on service boot. |
-| `autostart_auth_proxy_port` | `3128` | Bind port for the auth MITM. |
+| `autostart_auth_proxy` | `true` | Auto-start the Python BITM on service boot. |
+| `autostart_auth_proxy_port` | `3128` | Bind port for the auth BITM. |
 | `proxy_via_playwright` | `false` | When a proxied request matches a live Playwright session, route it through that session's context instead of direct. |
 | `auto_login_wait_seconds` | `10` | Proxy wait timeout for an auto-launched Playwright to become ready. |
 
@@ -612,6 +661,120 @@ them downstream.
 
 ---
 
+## ROPC test (Resource Owner Password Credentials)
+
+Per-credential **Test ROPC…** button on the Captured Credentials card,
+alongside **Get-AAATokenFromAzLogin**. POSTs username + password straight
+to `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token` with
+`grant_type=password` (RFC 6749 §4.3) — bypasses the interactive
+authorization endpoint (and any CA policy that only evaluates that leg)
+entirely, the same class of gap Path A/Path B already demonstrate.
+
+| Piece | Where |
+|---|---|
+| Endpoint | `POST /api/test-ropc` (`backend/debug_server.py`) |
+| UI | `renderRopcPanel()` renders the toggle + form; `ropcToggle()`/`ropcRun()` drive it |
+| Pre-fill heuristic | `guessUserPass()` — factored out of the AAA snippet's own heuristic so both features guess identically from `captured_inputs` |
+| Gate | `enable_token_testing` (same flag as Test Graph — this also creates a real Azure AD sign-in log entry) |
+
+Body: `{username, password, tenant_id?, client_id?, scope?}`.
+`client_id` defaults to the Microsoft Authentication Broker
+(`29d9ed98-a469-4536-ade2-f981bc1d605e`, already used elsewhere in this
+repo by `tools/phantom_join.py`) — a well-known public client, so ROPC
+testing doesn't need its own app registration.
+
+**`tenant_id` defaults to `organizations`, not `common`/`consumers`** —
+confirmed live against the real endpoint: Microsoft rejects the password
+grant over `common`/`consumers` outright with `AADSTS9001023` ("grant
+type not supported over the /common or /consumers endpoints"), before it
+ever evaluates the credentials. `organizations` or a specific tenant
+GUID/domain is required for the request to actually reach account/CA
+evaluation.
+
+The AADSTS error code on failure is the actual finding, not just "it
+didn't work" — e.g. `AADSTS50076` means CA/MFA genuinely blocked the
+legacy grant (policy working as intended); a **200 with an access_token**
+on an account that requires MFA for interactive sign-in means ROPC is an
+uncovered bypass path. The UI reflects this: a blocked grant renders in
+yellow as a (likely intended) policy hit, while a successful grant
+renders in red as a warning, not a green success.
+
+---
+
+## Azure DevOps PAT minting (persistence)
+
+Per-credential **Create ADO PAT…** button on the Captured Credentials
+card, directly below **Test ROPC…** (added in 1.26.0). Turns captured
+creds into a long-lived Azure DevOps Personal Access Token — durable
+credential material that survives the victim's password reset and usually
+sits outside the CA/MFA re-evaluation that gates interactive sign-in, the
+same class of coverage gap as ROPC and Phantom Join.
+
+| Piece | Where |
+|---|---|
+| Endpoint | `POST /api/create-ado-pat` (`backend/debug_server.py`) |
+| UI | `renderAdoPatPanel()` renders the toggle + form; `adoPatToggle()`/`adoPatRun()` drive it |
+| Shared token step | `_ropc_grant()` — the same helper `/api/test-ropc` uses, so a blocked grant surfaces the AADSTS code identically |
+| nginx | `location = /api/create-ado-pat` in `nginx/rtvbitm` (dashboard-exclusive `:8092` route — see the CLAUDE.md rule) |
+| Gate | `enable_token_testing` (creates a real AAD sign-in log entry **and** a real, listable PAT in the target org) |
+
+Body: `{username?, password?, tenant_id?, access_token?, client_id?,
+organization?, display_name?, scope?, valid_days?, all_orgs?}`.
+
+The chain (all confirmed live against the real endpoints):
+
+1. **AAD token for the ADO resource** (`499b84ac-1321-427f-aa17-267ca6975798`)
+   — either a caller-supplied `access_token`, or a ROPC grant of
+   username+password. `client_id` defaults to the **Azure CLI public
+   client** (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`), *not* the Auth
+   Broker client the Graph ROPC uses — confirmed live: the Auth Broker
+   client does not carry Azure DevOps delegated permission, the Azure CLI
+   client does.
+2. **Org discovery** (when `organization` is blank) — `GET`
+   `app.vssps.visualstudio.com/_apis/profile/profiles/me` then
+   `/_apis/accounts?memberId=…`. Returns the full org list, uses the first.
+3. **PAT create** — `POST vssps.dev.azure.com/{org}/_apis/tokens/pats`
+   with `{displayName, scope, validTo, allOrgs}`. `scope: app_token` =
+   full access; `all_orgs: true` = valid against every org the identity
+   can reach; `valid_days` defaults to 90.
+
+The vssps hosts intermittently take >15s on the TLS handshake from inside
+Docker Desktop's NAT (confirmed live — a 15s cap surfaced as a spurious
+"discovery failed"), so the two ADO calls use a 30s timeout while the
+Microsoft login endpoint stays at 15s. A blocked ROPC grant returns the
+`aadsts_code` as the finding (same shape as the ROPC panel); a minted PAT
+returns the token plus its `authorizationId` for revocation. **Cleanup:**
+revoke from Azure DevOps → User settings → Personal access tokens, or
+`DELETE .../_apis/tokens/pats?authorizationId=…`.
+
+---
+
+## Docs tab — Test Attacks playbook
+
+The **Docs** tab (`:8092`) has two subtabs: **Reference** (the original
+single-page reference this section lives in spirit alongside) and
+**Test Attacks**, added in 1.25.0 — a step-by-step playbook covering every
+attack/demo the tool drives, written against the actual dashboard controls
+(tab names, button labels, field ids) so it works as a live runbook, not
+just a feature list.
+
+| Piece | Where |
+|---|---|
+| UI | `renderDocs()` in `backend/debug_server.py` — subtab bar toggles `#docs-pane-reference`/`#docs-pane-attacks` via `switchDocsPane()` |
+| Content | Static HTML, no new backend route — each attack is an `.attack-card` block with a goal line and numbered steps |
+| Card titles | Each card's `<h3>` title is a link to where the attack lives in the dashboard — `docsGoTab('creds'|'phantom'|'auth-proxy'|'keepalive-log')` for `:8092` tabs, or a `target="_blank"` link to `:8091`/the demo page for browser-driven ones (1.26.0) |
+
+Covers: push notification auto-click (Path A), passkey dead-end detection,
+silent drive-by fingerprinting, Phantom Join device-code CA bypass (Path
+B), the ROPC test above, the ADO PAT minting above, credential injection
+via the auth proxy, token keepalive/persistence, and the lander
+credential-capture page. Each entry names the real tab/button/field to
+click, not a paraphrase, and its title links straight to that tab —
+update this list (and the title link target) alongside any change to
+those controls' labels or ids.
+
+---
+
 ## Environment variables
 
 These live in the service environment (set by `install-ubuntu.sh` or
@@ -624,7 +787,7 @@ These live in the service environment (set by `install-ubuntu.sh` or
 | `DEBUG_PORT` | `8092` | Debug-dashboard port override. |
 | `RAG_PORT` | `8000` | RAG API port override. |
 | `RP_PORT` | `8085` | Reverse-proxy port override. |
-| `DATA_DIR` | `/var/lib/mitm-proxy` (installer) / platform-specific otherwise | Captures, credentials, screenshots, api_key_plaintext. |
+| `DATA_DIR` | `/var/lib/bitm-proxy` (installer) / platform-specific otherwise | Captures, credentials, screenshots, api_key_plaintext. |
 | `SCREENSHOTS_DIR` | `$DATA_DIR/screenshots` | Per-session screenshot output. |
 | `CERTS_DIR` | `$APP_DIR/certs` | Forged-CA store + user-supplied custom CA bundles. |
 | `PLAYWRIGHT_BROWSERS_PATH` | `$APP_DIR/.playwright-browsers` (installer) | Where Chromium/Edge binaries live. |
@@ -632,7 +795,7 @@ These live in the service environment (set by `install-ubuntu.sh` or
 | `INTERNAL_SECRET` | *(random at install)* | Shared secret between control-plane processes. |
 | `CREDENTIAL_PASSPHRASE` | unset | If set, `credentials_store` + `cookies_store` are AES-256-GCM-encrypted. |
 | `DISABLE_PYTHON_REVPROXY` | unset | `1` to skip binding the Python reverse proxy (Go daemon owns `:8085`). |
-| `DISABLE_GO_AUTHPROXY` | unset | `1` to skip the Go MITM; Python `:3128` keeps auth MITM duties. |
+| `DISABLE_GO_AUTHPROXY` | unset | `1` to skip the Go BITM; Python `:3128` keeps auth BITM duties. |
 | `SLOW_CALLBACK_MS` | `100` | Threshold for the event-loop slow-callback watchdog. |
 | `PYTHONUNBUFFERED` | `1` in the systemd unit | Flush stdout/stderr immediately so journald sees live output. |
 

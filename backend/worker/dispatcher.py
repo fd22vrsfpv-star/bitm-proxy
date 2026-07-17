@@ -10,7 +10,7 @@ return NotImplemented so the control plane can call them behind the
 `workers_enabled` feature flag without hitting half-working code.
 
 Usage shape:
-    dispatcher = Dispatcher(socket_path="/tmp/mitm-pool.sock")
+    dispatcher = Dispatcher(socket_path="/tmp/bitm-pool.sock")
     await dispatcher.start(worker_count=4, capacity=5)
     # … control plane runs …
     await dispatcher.stop()
@@ -51,7 +51,7 @@ class Dispatcher:
     def __init__(self, socket_path: str | None = None) -> None:
         if socket_path is None:
             socket_path = str(Path(tempfile.gettempdir())
-                              / f"mitm-pool-{os.getpid()}.sock")
+                              / f"bitm-pool-{os.getpid()}.sock")
         self.socket_path = socket_path
         self.workers: dict[int, _WorkerConn] = {}
         self._server: asyncio.base_events.Server | None = None
@@ -106,7 +106,7 @@ class Dispatcher:
         ]
         env = dict(os.environ)
         # Workers mustn't try to set up their own uvicorn signal handlers.
-        env["MITM_WORKER"] = "1"
+        env["BITM_WORKER"] = "1"
         proc = subprocess.Popen(cmd, env=env,
                                  stdout=None, stderr=None,
                                  start_new_session=False)

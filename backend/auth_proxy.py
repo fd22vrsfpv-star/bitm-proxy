@@ -4,7 +4,7 @@ Injects captured credentials (cookies, bearer tokens, headers) into requests
 matching known sites. Configure your browser or tool to use this as a proxy.
 
 HTTP  — headers and cookies injected directly.
-HTTPS — CONNECT tunnel with MITM via a generated CA cert (installed once).
+HTTPS — CONNECT tunnel with BITM via a generated CA cert (installed once).
         Without the CA cert installed, HTTPS sites will show cert warnings.
 """
 
@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from backend.store import JsonStore
 from backend.shared import append_log, get_config_value
+from backend.site_rules import host_allowed_for_proxy
 
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
@@ -110,7 +111,7 @@ def _capture_request(hostname: str, headers: dict, url: str):
         if prev != auth:
             captured_header_names.append("Authorization")
     # Device fingerprint: the user's real browser is connecting through the
-    # MITM, so its User-Agent + client-hints + Accept-Language come through
+    # BITM, so its User-Agent + client-hints + Accept-Language come through
     # on every request. Keep the latest per-host — Playwright can replay it
     # so the IdP sees the same device (avoids a new-device MFA challenge).
     _FP_HEADER_NAMES = (
@@ -171,7 +172,7 @@ def _capture_request(hostname: str, headers: dict, url: str):
              level="debug")
 
 
-_PROBE_CALLBACK_PATH = "/__mitm_probe_callback"
+_PROBE_CALLBACK_PATH = "/__bitm_probe_callback"
 
 
 def _build_probe_response(hostname: str, original_url: str,
@@ -218,7 +219,7 @@ def _build_probe_response(hostname: str, original_url: str,
         "<title>Registering device…</title>"
         "<style>body{font-family:system-ui;background:#0a0a14;"
         "color:#cbd5e1;padding:24px}</style>"
-        "<p>Registering this device with the MITM proxy…</p>"
+        "<p>Registering this device with the BITM proxy…</p>"
         "<noscript>JavaScript is required for device registration. "
         "<a href=\"" + redirect.replace('"', '&quot;') + "\">Continue</a>"
         "</noscript>"
@@ -786,7 +787,7 @@ def _write_http_response(writer, status: int, headers: dict, body: bytes):
     if body:
         writer.write(body)
 
-# ── CA cert generation (for HTTPS MITM) ──────────────────
+# ── CA cert generation (for HTTPS BITM) ──────────────────
 
 _ca_key = None
 _ca_cert = None
@@ -829,8 +830,8 @@ def _ensure_ca():
 
         _ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         name = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "MITM Proxy CA"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "MITM Proxy"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "BITM Proxy CA"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "BITM Proxy"),
         ])
         _ca_cert = (
             x509.CertificateBuilder()
@@ -859,7 +860,7 @@ def _ensure_ca():
         return True
     except ImportError:
         append_log("warn", "auth_proxy",
-                   "cryptography package not installed — HTTPS MITM disabled. "
+                   "cryptography package not installed — HTTPS BITM disabled. "
                    "Install with: pip install cryptography")
         return False
     except Exception as e:
@@ -977,9 +978,9 @@ def install_uploaded_ca(cert_pem: bytes, key_pem: bytes) -> dict:
     if not is_ca_extension:
         warnings.append(
             "cert does not have BasicConstraints CA:TRUE — browsers "
-            "will refuse to use it for trust-store-based MITM. Re-issue "
+            "will refuse to use it for trust-store-based BITM. Re-issue "
             "the cert with the CA flag set if you want to use it as a "
-            "MITM root.")
+            "BITM root.")
 
     # Persist atomically to avoid a half-written swap if something
     # crashes mid-write.
@@ -1084,7 +1085,7 @@ def _make_host_cert(hostname: str):
 
 
 def _make_ssl_context(hostname: str):
-    """Create an SSL context with a host-specific cert for MITM."""
+    """Create an SSL context with a host-specific cert for BITM."""
     key, cert = _make_host_cert(hostname)
     if not key or not cert:
         return None
@@ -1438,6 +1439,11 @@ async def _handle_http(reader, writer, method, target, version, raw_headers):
     if parsed.query:
         path += "?" + parsed.query
 
+    if not host_allowed_for_proxy(hostname):
+        await _plain_http_passthrough(reader, writer, method, path, version,
+                                       raw_headers, hostname, port)
+        return
+
     # Parse existing headers into a dict
     headers = {}
     for h in raw_headers:
@@ -1626,7 +1632,7 @@ async def _handle_http(reader, writer, method, target, version, raw_headers):
 
 
 async def _handle_connect(reader, writer, target, raw_headers):
-    """Handle HTTPS CONNECT — MITM if CA is available, else plain tunnel."""
+    """Handle HTTPS CONNECT — BITM if CA is available, else plain tunnel."""
     global _inject_count
     host_port = target.split(":")
     hostname = host_port[0]
@@ -1635,18 +1641,23 @@ async def _handle_connect(reader, writer, target, raw_headers):
     creds = _get_credentials_for_host(hostname)
     has_ca = _ca_key is not None
 
-    # Always MITM when a CA is available so we can capture state; injection
+    if not host_allowed_for_proxy(hostname):
+        _log(f"TUNNEL {hostname}:{port} (not in proxy_allowed_hosts — passthrough, no BITM)", "debug")
+        await _plain_tunnel(reader, writer, hostname, port)
+        return
+
+    # Always BITM when a CA is available so we can capture state; injection
     # still happens when creds exist, and no-op otherwise.
     if has_ca:
-        await _mitm_connect(reader, writer, hostname, port, creds)
+        await _bitm_connect(reader, writer, hostname, port, creds)
     else:
         if creds:
-            _log(f"TUNNEL {hostname}:{port} (has creds but no CA — install cryptography for MITM)")
+            _log(f"TUNNEL {hostname}:{port} (has creds but no CA — install cryptography for BITM)")
         await _plain_tunnel(reader, writer, hostname, port)
 
 
 async def _plain_tunnel(reader, writer, hostname, port):
-    """Simple CONNECT tunnel — no MITM, no injection."""
+    """Simple CONNECT tunnel — no BITM, no injection."""
     try:
         remote_reader, remote_writer = await asyncio.wait_for(
             asyncio.open_connection(hostname, port), timeout=10)
@@ -1675,8 +1686,55 @@ async def _plain_tunnel(reader, writer, hostname, port):
     remote_writer.close()
 
 
-async def _mitm_connect(reader, writer, hostname, port, creds):
-    """MITM CONNECT — decrypt, inject credentials, re-encrypt."""
+async def _plain_http_passthrough(reader, writer, method, path, version, raw_headers, hostname, port):
+    """Byte-faithful single-request relay for hosts not in
+    proxy_allowed_hosts — no capture, no credential injection, no
+    probe/device interception. The plain-HTTP counterpart to
+    _plain_tunnel's role for CONNECT."""
+    content_length = 0
+    for h in raw_headers:
+        if ":" in h and h.split(":", 1)[0].strip().lower() == "content-length":
+            try:
+                content_length = int(h.split(":", 1)[1].strip())
+            except ValueError:
+                content_length = 0
+            break
+    body = await reader.read(content_length) if content_length > 0 else b""
+
+    try:
+        remote_reader, remote_writer = await asyncio.wait_for(
+            asyncio.open_connection(hostname, port), timeout=10)
+    except Exception as e:
+        _log(f"Connect failed {hostname}:{port} (passthrough) — {e}", "warn")
+        writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+        await writer.drain()
+        return
+
+    req = f"{method} {path} {version}\r\n"
+    for h in raw_headers:
+        req += h + "\r\n"
+    req += "\r\n"
+    remote_writer.write(req.encode())
+    await remote_writer.drain()
+    if body:
+        remote_writer.write(body)
+        await remote_writer.drain()
+
+    _log(f"HTTP {method} {hostname}{path[:120]}  (not in proxy_allowed_hosts — passthrough)", "debug")
+    try:
+        while True:
+            data = await remote_reader.read(65536)
+            if not data:
+                break
+            writer.write(data)
+            await writer.drain()
+    except Exception:
+        pass
+    remote_writer.close()
+
+
+async def _bitm_connect(reader, writer, hostname, port, creds):
+    """BITM CONNECT — decrypt, inject credentials, re-encrypt."""
     global _inject_count
 
     # Tell client the tunnel is established
@@ -1686,7 +1744,7 @@ async def _mitm_connect(reader, writer, hostname, port, creds):
     # Create SSL context with a cert for this hostname
     server_ctx = _make_ssl_context(hostname)
     if not server_ctx:
-        _log(f"MITM cert generation failed for {hostname}, falling back to tunnel", "warn")
+        _log(f"BITM cert generation failed for {hostname}, falling back to tunnel", "warn")
         _unroutable(hostname, "cert_generation_failed")
         # Already sent 200, so just pipe through raw
         try:
@@ -1723,7 +1781,7 @@ async def _mitm_connect(reader, writer, hostname, port, creds):
         tls_writer = asyncio.StreamWriter(tls_transport, protocol, tls_reader, loop)
     except Exception as e:
         tb = traceback.format_exc()
-        _log(f"MITM TLS handshake failed for {hostname}: "
+        _log(f"BITM TLS handshake failed for {hostname}: "
              f"{type(e).__name__}: {e!r}\n{tb}", "warn")
         _unroutable(hostname, f"tls_handshake_failed: {type(e).__name__}: {e!r}")
         return
@@ -1752,7 +1810,7 @@ async def _mitm_connect(reader, writer, hostname, port, creds):
                 k, v = decoded.split(":", 1)
                 headers[k.strip()] = v.strip()
 
-        # Capture client-side state flowing through the MITM
+        # Capture client-side state flowing through the BITM
         full_url = f"https://{hostname}{path}"
         _capture_request(hostname, headers, full_url)
 
@@ -1811,7 +1869,7 @@ async def _mitm_connect(reader, writer, hostname, port, creds):
 
         if injected:
             _inject_count += 1
-            _log(f"MITM_INJECT {method} https://{hostname}{path[:80]} <- {', '.join(injected)}")
+            _log(f"BITM_INJECT {method} https://{hostname}{path[:80]} <- {', '.join(injected)}")
 
         # Optional: route via Playwright session instead of direct upstream
         if get_config_value("proxy_via_playwright", False):
@@ -1838,7 +1896,7 @@ async def _mitm_connect(reader, writer, hostname, port, creds):
         # Allowlisted body-capture into the Flow Trace synthetic
         # session. Run before the upstream fetch so the request side
         # is recorded even if the fetch raises.
-        bc_req_id = f"mitm_{id(tls_reader)}_{int(time.time()*1000)}"
+        bc_req_id = f"bitm_{id(tls_reader)}_{int(time.time()*1000)}"
         bc_active = _body_capture_should(hostname)
         if bc_active:
             _body_capture_request(
@@ -1939,10 +1997,10 @@ async def _mitm_connect(reader, writer, hostname, port, creds):
         # expected background noise, not a session failure: log at
         # debug without the traceback so the dashboard's All Logs view
         # stays signal-heavy.
-        _log(f"MITM idle preconnect closed for {hostname}", "debug")
+        _log(f"BITM idle preconnect closed for {hostname}", "debug")
     except Exception as e:
         tb = traceback.format_exc()
-        _log(f"MITM request handling error for {hostname}: "
+        _log(f"BITM request handling error for {hostname}: "
              f"{type(e).__name__}: {e!r}\n{tb}", "warn")
     finally:
         try:
@@ -1989,14 +2047,14 @@ async def start_auth_proxy(port: int = 3128) -> dict:
     _proxy_port = port
 
     ca_path = str(_CA_DIR / "ca.crt") if _CA_DIR else None
-    mode = ("MITM (HTTPS injection enabled)" if has_ca
+    mode = ("BITM (HTTPS injection enabled)" if has_ca
             else "tunnel-only (HTTP injection only)")
     _log(f"Auth proxy STARTED on :{port} — {mode}  (bound to 0.0.0.0)")
 
     return {
         "running": True,
         "port": port,
-        "mitm_enabled": has_ca,
+        "bitm_enabled": has_ca,
         "ca_cert_path": ca_path,
         "message": f"Proxy on :{port} — {mode}",
     }
@@ -2023,6 +2081,6 @@ def get_auth_proxy_status() -> dict:
         "port": _proxy_port,
         "request_count": _request_count,
         "inject_count": _inject_count,
-        "mitm_enabled": _ca_key is not None,
+        "bitm_enabled": _ca_key is not None,
         "ca_cert_path": str(_CA_DIR / "ca.crt") if _CA_DIR else None,
     }

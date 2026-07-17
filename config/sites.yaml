@@ -131,6 +131,20 @@ globals:
     - r.manage.microsoft.com
     - "*.r.manage.microsoft.com"
 
+  # Hostname allowlist for the :3128 auth proxy's BITM interception.
+  # Empty (the default) = unrestricted, i.e. today's behavior for every
+  # existing install — this proxy intercepts/decrypts any HTTPS host it
+  # sees, same as before. Non-empty is opt-in hardening for a deployment
+  # that must not be usable to intercept arbitrary hosts (e.g. a
+  # publicly-reachable lab instance) — set this via $DATA_DIR/sites.yaml
+  # for that deployment rather than editing this committed file, so the
+  # lab's specific hostnames stay out of the repo. Exact hostname or exact
+  # subdomain-suffix match only (see backend/site_rules.py:_host_allowed) —
+  # deliberately stricter than the substring/"*.suffix" matching used
+  # elsewhere in this file, since this one gates a security boundary, not
+  # a logging heuristic.
+  proxy_allowed_hosts: []
+
   # MCAS (Microsoft Cloud App Security) proxy domains. Post-login traffic
   # often gets rewritten through these.
   mcas_domains:

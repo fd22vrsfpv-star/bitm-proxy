@@ -1,5 +1,5 @@
 #!/bin/bash
-# Import the mitm-proxy MITM CA into the macOS System Keychain as a trusted
+# Import the bitm-proxy BITM CA into the macOS System Keychain as a trusted
 # root for SSL. Required for Chrome / curl / most native tools to accept the
 # forged leaf certs the proxy mints at runtime.
 #
@@ -14,7 +14,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
-CA_PATH="${MITM_CA_PATH:-$HOME/Library/Application Support/MitmProxy/data/proxy_ca/ca.crt}"
+CA_PATH="${BITM_CA_PATH:-$HOME/Library/Application Support/BitmProxy/data/proxy_ca/ca.crt}"
 if [ ! -f "$CA_PATH" ]; then
     echo "⚠  CA cert not found at: $CA_PATH"
     echo "   Start the proxy once (./run-local.sh) so it generates the CA, then re-run."
@@ -32,7 +32,7 @@ sudo security add-trusted-cert -d -r trustRoot \
 
 echo
 echo "==> Done. Verifying:"
-security find-certificate -c "MITM Proxy CA" -Z /Library/Keychains/System.keychain \
+security find-certificate -c "BITM Proxy CA" -Z /Library/Keychains/System.keychain \
     | grep -E "SHA-1|alis|keychain:"
 
 echo

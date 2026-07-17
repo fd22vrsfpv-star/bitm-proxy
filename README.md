@@ -1,7 +1,7 @@
-# MITM Proxy
+# BITM Proxy
 
 Remote-browser login + API testing tool. Runs a headless Playwright
-browser, a control-plane dashboard, a MITM auth proxy, and a Go daemon
+browser, a control-plane dashboard, a BITM auth proxy, and a Go daemon
 in one process tree.
 
 | Port | Service | Purpose |
@@ -10,7 +10,7 @@ in one process tree.
 | 8092 | Debug dashboard | Live logs, config, flow trace, AI analysis |
 | 8000 | RAG API | Burp extension endpoint |
 | 8085 | Reverse proxy | Authorized pentest use only |
-| 3128 | Auth MITM | Forged-CA MITM for auth capture |
+| 3128 | Auth BITM | Forged-CA BITM for auth capture |
 | 3129 | Test proxy | Go pass-through |
 
 ---
@@ -27,16 +27,16 @@ prompts for any missing system deps. Data stored in your home directory.
 ```
 
 Ports are the same as the service install. Data defaults to
-`~/Library/Application Support/MitmProxy/` on macOS and
-`~/.local/share/MitmProxy/` on Linux.
+`~/Library/Application Support/BitmProxy/` on macOS and
+`~/.local/share/BitmProxy/` on Linux.
 
 ---
 
 ## Docker
 
 ```bash
-docker rm -f mitm-proxy && docker build -t mitm-proxy .
-docker run -p8091:8091 -p8092:8092 -v mitm-proxy-data:/data -it mitm-proxy
+docker rm -f bitm-proxy && docker build -t bitm-proxy .
+docker run -p8091:8091 -p8092:8092 -v bitm-proxy-data:/data -it bitm-proxy
 ```
 
 Custom CA certs (Zscaler, corp proxy): drop `.crt`/`.pem` files in
@@ -44,10 +44,41 @@ Custom CA certs (Zscaler, corp proxy): drop `.crt`/`.pem` files in
 
 ```bash
 docker run -p8091:8091 -p8092:8092 \
-    -v mitm-proxy-data:/data \
+    -v bitm-proxy-data:/data \
     -v /path/to/extra-certs:/certs \
-    -it mitm-proxy
+    -it bitm-proxy
 ```
+
+Builds and runs on arm64 (Apple Silicon) as well as amd64 — verified live,
+not just per docs. Chromium and Firefox both have real arm64 Linux builds
+and work normally; Microsoft Edge does not (Microsoft has never shipped
+one), so `edge-real` mode silently falls back and stays disabled on arm64.
+Set `browser_type` to `firefox` in Configuration (or via
+`/api/config`) for a genuine Gecko engine instead of a Chromium UA spoof.
+
+---
+
+## DEF CON RTV Lab — `docker-compose.yml`
+
+A separate, more locked-down deployment: nginx (TLS termination, landing
+page) fronts the app, so visitors never install a CA cert or configure a
+proxy — they drive a hosted Playwright session through the browser instead.
+Two safety allowlists (`proxy_allowed_hosts`, `phantom_join_allowed_domains`,
+both empty/unrestricted by default) scope the whole deployment to a specific
+tenant, enforced in code, not just documented as policy.
+
+```bash
+./run_demo.sh          # macOS / Linux
+.\run_demo.ps1         # Windows
+```
+
+Defaults to `https://127.0.0.1/` — loopback-only, self-signed cert, safe to
+run as-is. `--public`/`-Public` widens the bind to `0.0.0.0` for a real
+public instance (only after populating the allowlists). See
+[`docs/DEFCON-LAB-SETUP.md`](./docs/DEFCON-LAB-SETUP.md) for the full
+runbook: tenant setup, both allowlists, the reset procedure, and
+cross-platform notes (this stack is verified working on arm64 Linux/macOS,
+not just amd64).
 
 ---
 
@@ -63,7 +94,7 @@ windows\quick-start.bat
 
 ### Full installer (PowerShell, admin)
 
-Installs to `%LOCALAPPDATA%\MitmProxy`, adds Start Menu + Desktop
+Installs to `%LOCALAPPDATA%\BitmProxy`, adds Start Menu + Desktop
 shortcuts.
 
 ```powershell
@@ -76,13 +107,13 @@ Runs on boot, no console, survives logoff. Requires Administrator.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File windows\service-install.ps1
-Start-Service MitmProxy
-Get-Service  MitmProxy
+Start-Service BitmProxy
+Get-Service  BitmProxy
 ```
 
-Log file: `%LOCALAPPDATA%\MitmProxy\data\service.log`.
+Log file: `%LOCALAPPDATA%\BitmProxy\data\service.log`.
 
-Uninstall: `powershell %LOCALAPPDATA%\MitmProxy\uninstall.ps1`.
+Uninstall: `powershell %LOCALAPPDATA%\BitmProxy\uninstall.ps1`.
 
 ---
 
@@ -93,8 +124,8 @@ and 24.04. One command; idempotent; creates a dedicated service user, installs
 systemd unit, starts on boot.
 
 ```bash
-git clone https://github.com/raptordoug/bitm-proxy.git
-cd mitm-proxy
+git clone https://github.com/fd22vrsfpv-star/bitm-proxy.git
+cd bitm-proxy
 sudo ./install-ubuntu.sh
 ```
 
@@ -105,32 +136,32 @@ sudo ./install-ubuntu.sh
 2. Installs PowerShell (`pwsh`) via Microsoft's apt repo + the `Az.Accounts`
    PowerShell module (system-wide). Required for AAA runner endpoints.
    Best-effort — the proxy still runs if these fail.
-3. Creates the `mitm-proxy` system user (no shell, home = `/var/lib/mitm-proxy`).
-4. Syncs this checkout to `/opt/mitm-proxy`, builds the Python venv,
+3. Creates the `bitm-proxy` system user (no shell, home = `/var/lib/bitm-proxy`).
+4. Syncs this checkout to `/opt/bitm-proxy`, builds the Python venv,
    installs Playwright Chromium + Edge channel, builds the frontend,
    builds the Go daemon.
-5. Writes `/etc/systemd/system/mitm-proxy.service` (hardened:
+5. Writes `/etc/systemd/system/bitm-proxy.service` (hardened:
    `ProtectSystem=full`, `ProtectHome=true`, `PrivateTmp=true`).
-6. `systemctl enable --now mitm-proxy`.
+6. `systemctl enable --now bitm-proxy`.
 
 ### Manage the service
 
 ```bash
-systemctl status  mitm-proxy
-systemctl restart mitm-proxy
-systemctl stop    mitm-proxy
-journalctl -u     mitm-proxy -f
+systemctl status  bitm-proxy
+systemctl restart bitm-proxy
+systemctl stop    bitm-proxy
+journalctl -u     bitm-proxy -f
 ```
 
 ### Data locations
 
 | What | Path |
 |------|------|
-| App code | `/opt/mitm-proxy` |
-| Data (sessions, credentials, screenshots) | `/var/lib/mitm-proxy` |
-| Custom CA certs | `/opt/mitm-proxy/certs` |
-| API key (plaintext) | `/var/lib/mitm-proxy/.api_key_plaintext` (mode 0600) |
-| Logs | `journalctl -u mitm-proxy` |
+| App code | `/opt/bitm-proxy` |
+| Data (sessions, credentials, screenshots) | `/var/lib/bitm-proxy` |
+| Custom CA certs | `/opt/bitm-proxy/certs` |
+| API key (plaintext) | `/var/lib/bitm-proxy/.api_key_plaintext` (mode 0600) |
+| Logs | `journalctl -u bitm-proxy` |
 
 ### Environment overrides
 
@@ -141,8 +172,8 @@ Set before invoking the installer:
 sudo BIND_HOST=0.0.0.0 ./install-ubuntu.sh
 
 # Custom paths and user.
-sudo APP_DIR=/srv/mitm DATA_DIR=/srv/mitm-data \
-     SERVICE_USER=mitm ./install-ubuntu.sh
+sudo APP_DIR=/srv/bitm DATA_DIR=/srv/bitm-data \
+     SERVICE_USER=bitm ./install-ubuntu.sh
 ```
 
 ### Uninstall
@@ -163,10 +194,10 @@ at `pages/nginx.conf.example`.
 ## External credential ingest — `POST /api/capture/external`
 
 Pentester-side tooling (Burp extension, a separate runner, anything
-that obtains credentials outside the `:3128` MITM path) can push them
+that obtains credentials outside the `:3128` BITM path) can push them
 into the same store + Slack channel as in-band captures.
 
-**→ See [`EXTERNAL_CAPTURE_SETUP.md`](./EXTERNAL_CAPTURE_SETUP.md) for complete setup guide with file locations, lander deployment, log formats, and troubleshooting.**
+**→ See [`docs/EXTERNAL_CAPTURE_SETUP.md`](./docs/EXTERNAL_CAPTURE_SETUP.md) for complete setup guide with file locations, lander deployment, log formats, and troubleshooting.**
 
 Configure once:
 
@@ -201,7 +232,7 @@ The endpoint writes through `credentials_store` (encrypted at rest
 when `CREDENTIAL_PASSPHRASE` is set, same as in-band captures) and
 fires `notify_slack_capture` so the Slack capture channel sees external
 ingests identically. `X-Capture-Token` is accepted as an alternative
-header. Per-field reference: `SESSIONS.md` → *External Capture*.
+header. Per-field reference: `docs/SESSIONS.md` → *External Capture*.
 
 ### Lander pages — `pages/lander.html` and `pages/login.html`
 
@@ -244,8 +275,8 @@ use a single-purpose token and rotate it after the engagement.
 ### Test proxy landing page — `pages/proxy-3129.html`
 
 The Go test proxy on `:3129` is a transparent pass-through HTTP/HTTPS proxy
-(no MITM, no credential injection) — useful for A/B testing against the
-Python MITM on `:3128` when debugging. The landing page provides quick
+(no BITM, no credential injection) — useful for A/B testing against the
+Python BITM on `:3128` when debugging. The landing page provides quick
 navigation links to both proxy ports and the dashboard.
 
 **Access:**
@@ -257,12 +288,12 @@ https://<host>:3129/  (if TLS cert is configured)
 The page auto-detects the hostname from the browser's URL and dynamically
 generates proxy-configuration shortlinks:
 - `:3129/proxy` or `:3129/3129` — direct to the test proxy
-- `:3129/mitm` or `:3129/3128` — direct to the MITM auth proxy
+- `:3129/bitm` or `:3129/3128` — direct to the BITM auth proxy
 - `:3129/dashboard` or `:3129/8092` — direct to the debug dashboard
 
 Useful when you want to:
-1. Compare MITM behavior `:3128` vs. transparent `:3129`
-2. Verify proxy routing works without TLS MITM complexity
+1. Compare BITM behavior `:3128` vs. transparent `:3129`
+2. Verify proxy routing works without TLS BITM complexity
 3. Test upstream connections without certificate interception
 
 ---
@@ -274,28 +305,52 @@ sessions, cookies, and credentials are AES-256-GCM encrypted at rest.
 Read them with:
 
 ```bash
-sudo -u mitm-proxy \
+sudo -u bitm-proxy \
     CREDENTIAL_PASSPHRASE='...' \
-    /opt/mitm-proxy/.venv/bin/python /opt/mitm-proxy/read_creds.py
+    /opt/bitm-proxy/.venv/bin/python /opt/bitm-proxy/read_creds.py
 ```
 
 ---
+
+## Burp Suite integration — RAG findings bridge
+
+`burp-extension/RagScanBridge.py` is a Burp Extender (Jython) extension that
+syncs findings bidirectionally with the built-in RAG API on `:8000`
+(`backend/rag_api.py`) — no external RAG Scan Stack backend required. It's
+adapted from the RAG Scan Stack project's own extension of the same name;
+the endpoints it calls
+(`/health`, `/scope*`, `/engagements*`, `/findings/search`,
+`/export/findings-exchange`, `/import/findings-exchange`) are implemented
+here to match exactly.
+
+- **Download**: Configuration tab → *RAG Scan Stack* → *Burp Suite* → **Download
+  Burp extension** (streams `burp-extension/RagScanBridge.py` from
+  `GET /api/rag/burp-extension/download`).
+- **Install**: Burp Suite → Extender → Add → Extension Type: Python (Jython)
+  → select the downloaded file. Default API URL is
+  `http://localhost:8000` (plain HTTP — the built-in RAG API doesn't
+  terminate TLS itself).
+- **Not supported** against the built-in RAG API: the extension's SOCKS
+  tunnel-node proxy routing and Follow-Up Queue tabs call `/nodes` and
+  `/burp-queue`, which are RAG Scan Stack-specific infrastructure this
+  project doesn't implement — using them here just logs a connection
+  error, not a crash.
 
 ## Architecture
 
 Three docs, in increasing depth:
 
-- **`ARCHITECTURE.md`** — component map: ports, backend modules,
+- **`docs/ARCHITECTURE.md`** — component map: ports, backend modules,
   frontend layout, where each surface (`:8091`, `:8092`, `:3128`,
   `:8000`, `:8085`, `:3129`) lives and what it owns.
-- **`SESSIONS.md`** — every session type (Playwright, sub-session, host
+- **`docs/SESSIONS.md`** — every session type (Playwright, sub-session, host
   capture, credentials, cookies, flow trace, dashboard WS, auth-proxy
-  MITM, worker pool, **device profile**), every config variable, every
+  BITM, worker pool, **device profile**), every config variable, every
   environment variable, and the data-directory layout.
-- **`PROXY_DEEP_DIVE.md`** — on-the-wire path of `:3128`: forged CA,
+- **`docs/PROXY_DEEP_DIVE.md`** — on-the-wire path of `:3128`: forged CA,
   per-host cert generation, capture, injection, `curl_cffi` upstream
   TLS impersonation, the device-probe sentinel.
-- **`AUTH_FLOWS.md`** — operator guide for adding/troubleshooting
+- **`docs/AUTH_FLOWS.md`** — operator guide for adding/troubleshooting
   auth-flow milestones (LOGIN → AUTH CODE → TOKENS → SESSION → PRT).
   Covers the diagnostics emitted by **Reclassify milestones**, how to
   capture a representative flow, how to read the milestone shapes
@@ -329,6 +384,6 @@ reusable bundle of fingerprint + (optional) probed JS signals +
   the profile carries them. The IdP sees a coherent device.
 
 All device events log to the `devices` category — filter the All Logs
-view in the dashboard or grep `journalctl -u mitm-proxy -g DEVICE_`.
+view in the dashboard or grep `journalctl -u bitm-proxy -g DEVICE_`.
 
-Mechanism + storage in `SESSIONS.md` → *Sessions → Device profile*.
+Mechanism + storage in `docs/SESSIONS.md` → *Sessions → Device profile*.

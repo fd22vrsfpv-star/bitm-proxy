@@ -92,7 +92,7 @@ def _ensure_file_logger():
         return
     log_dir = _get_log_dir()
     log_path = log_dir / "captured.log"
-    _file_logger = logging.getLogger("mitm-proxy-capture")
+    _file_logger = logging.getLogger("bitm-proxy-capture")
     _file_logger.setLevel(logging.DEBUG)
     _file_logger.propagate = False
     _file_handler = logging.handlers.RotatingFileHandler(
@@ -148,7 +148,7 @@ def _get_session_logger(session_id: str) -> logging.Logger:
     if session_id in _session_loggers:
         return _session_loggers[session_id]
     log_path = _get_session_log_dir() / f"{session_id}.log"
-    logger = logging.getLogger(f"mitm-proxy-session-{session_id}")
+    logger = logging.getLogger(f"bitm-proxy-session-{session_id}")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
     handler = logging.FileHandler(str(log_path), encoding="utf-8")
@@ -510,6 +510,16 @@ _config: dict[str, Any] = {
     # The route returns 403 on every request unless this flag is set
     # AND the request carries the standard API key.
     "allow_phantom_join": False,
+    # Tenant-domain allowlist for Phantom Join, checked in addition to
+    # allow_phantom_join above. Empty (the default) = unrestricted, i.e.
+    # today's behavior for every existing install — any domain the caller
+    # supplies is accepted. Non-empty is opt-in hardening for a deployment
+    # that must not be pointable at an arbitrary real org (e.g. a
+    # publicly-reachable lab instance) — set via $DATA_DIR/config.json for
+    # that deployment, not this committed file. Case-insensitive exact
+    # match against the "domain" field the caller supplies; tenant domains
+    # don't need wildcard/suffix matching the way hostnames do.
+    "phantom_join_allowed_domains": [],
     "log_requests": False,
     "log_responses": False,
     "log_auth_headers": True,

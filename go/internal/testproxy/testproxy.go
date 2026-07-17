@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mitm-proxy/go/internal/flowclient"
+	"github.com/bitm-proxy/go/internal/flowclient"
 )
 
 type Server struct {
@@ -26,14 +26,14 @@ func (s *Server) Handler() http.Handler {
 		if r.Method == http.MethodConnect {
 			s.flow.Log("info", "test_proxy",
 				"PASSTHROUGH CONNECT "+r.Host+
-					" — tunneled as-is, no MITM, no capture, no injection",
+					" — tunneled as-is, no BITM, no capture, no injection",
 				"testproxy")
 			s.handleConnect(w, r)
 			return
 		}
 		s.flow.Log("info", "test_proxy",
 			"PASSTHROUGH "+r.Method+" "+r.URL.String()+
-				" — forwarded as-is, no MITM, no capture, no injection",
+				" — forwarded as-is, no BITM, no capture, no injection",
 			"testproxy")
 		s.handleHTTP(w, r)
 	})

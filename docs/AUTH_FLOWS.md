@@ -46,9 +46,9 @@ login_re=NO, token_re=NO` line instead.)
 The same line is also:
 
 - **printed to stdout** with a `[FLOW]` prefix — visible via
-  `journalctl -u mitm-proxy -f` or `docker logs -f mitm-proxy` or the
+  `journalctl -u bitm-proxy -f` or `docker logs -f bitm-proxy` or the
   console of `run-local.sh`. Grep with
-  `journalctl -u mitm-proxy -g "FLOW.*reclassify"`.
+  `journalctl -u bitm-proxy -g "FLOW.*reclassify"`.
 - **written to the in-memory log buffer** under category `flow` —
   visible on the dashboard's *All Logs* tab when the Service dropdown
   is set to `flow`.
@@ -318,7 +318,7 @@ python3 -c "import yaml; yaml.safe_load(open('$DATA_DIR/sites.yaml'))" && echo O
 
 # 2. Regexes compile (the classifier emits one info line on first
 #    access; just look for "auth_milestones compiled: …" in the logs)
-journalctl -u mitm-proxy -n 50 -g "auth_milestones compiled"
+journalctl -u bitm-proxy -n 50 -g "auth_milestones compiled"
 
 # 3. Reclassify the captured session and check the kinds histogram
 #    appears with non-zero counts for the kinds you expected.

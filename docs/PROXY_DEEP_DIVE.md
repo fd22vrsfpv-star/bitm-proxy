@@ -1,4 +1,4 @@
-# Proxy Deep Dive — `:3128` MITM, Fingerprint Replay, Device Probe
+# Proxy Deep Dive — `:3128` BITM, Fingerprint Replay, Device Probe
 
 This is the on-the-wire view of `backend/auth_proxy.py`. For the
 high-level component map see `ARCHITECTURE.md`; for every config knob
@@ -6,7 +6,7 @@ and per-feature mechanic see `SESSIONS.md`.
 
 The proxy on `:3128` does five things in one hot path:
 
-1. Terminate the subject's CONNECT tunnel, MITM HTTPS with a forged
+1. Terminate the subject's CONNECT tunnel, BITM HTTPS with a forged
    per-host cert.
 2. Snapshot what flows through (cookies, Authorization, CSRF,
    User-Agent, Sec-CH-UA-*, Accept-Language) into
@@ -28,7 +28,7 @@ HTTP/1.1 forwarding.
 ```
    subject's browser ─► :3128 (asyncio TCP)
                           │
-                          ├─ CONNECT host:443 → forge cert(host) → MITM
+                          ├─ CONNECT host:443 → forge cert(host) → BITM
                           │       │
                           │       └─ TLS-decrypted request stream  ── _capture_request
                           │                                         ── inject saved creds
@@ -42,9 +42,29 @@ HTTP/1.1 forwarding.
 `_handle_client` reads one line, dispatches:
 
 - `CONNECT host:port HTTP/1.1` → `_handle_connect`. If we have no cert
-  (or the user disabled MITM for this host) → `_plain_tunnel` (just
-  splice). Otherwise → `_mitm_connect`.
+  (or the user disabled BITM for this host) → `_plain_tunnel` (just
+  splice). Otherwise → `_bitm_connect`.
 - `GET|POST|... <abs-url> HTTP/1.1` → `_handle_http`. Plain HTTP path.
+
+Both entry points check `site_rules.host_allowed_for_proxy(hostname)`
+first — an opt-in hostname allowlist (`globals.proxy_allowed_hosts` in
+`config/sites.yaml`, empty/unrestricted by default). When non-empty and
+the host isn't on it, `_handle_connect` forces `_plain_tunnel` (the exact
+same passthrough path used when there's no CA at all — no new plumbing),
+and `_handle_http` uses a dedicated byte-faithful passthrough
+(`_plain_http_passthrough`) that skips `_capture_request` and injection
+entirely, not just the cert forging. Matching is exact-hostname or
+exact-subdomain-suffix with a dot boundary
+(`site_rules._host_allowed`) — deliberately **not** the same
+substring/`"*.suffix"` matcher `noisy_hosts`/`body_capture_hostnames`
+use, since `"microsoft.com"` as a loose substring pattern would also
+match `evil-microsoft.com.attacker.net`, which is unacceptable for a
+security boundary rather than a noise-filtering heuristic. This is the
+load-bearing safety control for the DEF CON RTV Lab
+(`docs/DEFCON-LAB-SETUP.md`) — with no client-side CA/proxy config
+required to use the hosted session, this allowlist is what actually
+stops the shared instance from intercepting an arbitrary real site a
+visitor navigates the session to.
 
 ---
 
@@ -65,11 +85,11 @@ backend/auth_proxy.py
 macOS / Linux / Windows. After that, the subject's browser sees normal
 HTTPS — same green padlock, same HSTS behaviour.
 
-`_mitm_connect` writes `HTTP/1.1 200 Connection established`, then
+`_bitm_connect` writes `HTTP/1.1 200 Connection established`, then
 wraps the socket with `_make_ssl_context(hostname)` and reads the
 plaintext HTTP/1.1 request out of the TLS stream.
 
-There is no JA3 forging on the *server* side of the MITM — the
+There is no JA3 forging on the *server* side of the BITM — the
 subject's TLS handshake terminates at our forged cert. Subject-facing
 TLS uses Python's default cipher list. JA3 forging applies only to the
 **upstream** leg (see "Upstream impersonation" below).
@@ -113,7 +133,7 @@ _build_auth_headers(creds)                   →  Authorization, CSRF, etc.
 ```
 
 Logged as `HTTP <method> <host><path> INJECT<- cookies(N), Authorization, ...`
-or `MITM_INJECT ...` for the HTTPS path.
+or `BITM_INJECT ...` for the HTTPS path.
 
 This is how the operator can pre-seed a session: stash creds via the
 Captured Data tab, then any tool pointed at `:3128` for that host is
@@ -162,7 +182,7 @@ Critical bits:
   IMPERSONATE fetch failed and the host got skip-listed for 5
   minutes, before falling all the way back to the stock leg. The
   enum is the supported API. h2 framing translation back to the
-  MITM client is out of scope; `curl_cffi`'s impersonate profiles
+  BITM client is out of scope; `curl_cffi`'s impersonate profiles
   ship h1 shapes that match what real browsers do for the same
   endpoints.
 - `allow_redirects=False` — we re-frame the response and let the
@@ -208,8 +228,8 @@ to hosts it expects to need (DNS warmed, socket primed) and
 frequently doesn't reuse them. The proxy's TLS server-side
 handshake succeeds, then the request-line read hits the 10s
 `asyncio.wait_for` and raises `TimeoutError`. As of `v1.19.5`,
-the MITM connection handler catches `asyncio.TimeoutError`
-specifically and logs a single-line `MITM idle preconnect
+the BITM connection handler catches `asyncio.TimeoutError`
+specifically and logs a single-line `BITM idle preconnect
 closed for <host>` entry at the `debug` level, instead of a
 multi-line traceback at `warn`. The catch-all
 `except Exception` still warns on real errors.
@@ -241,22 +261,22 @@ backend/auth_proxy.py
 ├── _build_probe_response(host, original_url, token, device_id,
 │                         want_storage)
 │       returns a synthetic HTTP/1.1 200 OK with a tiny HTML page that:
-│         1. fetches `//<host>/__mitm_probe_callback?token=…&device_id=…&host=…`
+│         1. fetches `//<host>/__bitm_probe_callback?token=…&device_id=…&host=…`
 │            with JSON body { tz, languages, platform, screen, viewport,
 │                             hardware_concurrency, device_memory,
 │                             [local_storage, session_storage] }
 │         2. then `location.replace(original_url)`
 │
 ├── _is_probe_callback(path)
-│       True for "/__mitm_probe_callback" — the in-proxy sentinel.
+│       True for "/__bitm_probe_callback" — the in-proxy sentinel.
 │
 ├── _handle_probe_callback(reader, writer, host, path, headers)
 │       reads JSON body, calls backend.devices.consume_probe + apply_probe_result,
 │       returns 204 No Content (or 400 on token mismatch).
 │       *never reaches upstream*.
 │
-└── _handle_http and _mitm_connect both:
-        - on POST to /__mitm_probe_callback → call _handle_probe_callback, return.
+└── _handle_http and _bitm_connect both:
+        - on POST to /__bitm_probe_callback → call _handle_probe_callback, return.
         - on GET while _pending_probes[host] is set and device_probe_enabled is on
           → write _build_probe_response, return.
 ```
@@ -269,7 +289,7 @@ Why intercept inside the proxy rather than POSTing to `:8092`:
   subject's network.
 - Routing the callback through the proxy keeps everything HTTP-level
   on a single connection the subject already trusts.
-- The `/__mitm_probe_callback` path is processed **without contacting
+- The `/__bitm_probe_callback` path is processed **without contacting
   upstream** so the origin never sees the sentinel request.
 
 ### Single-fire semantics
@@ -310,7 +330,7 @@ on, looks like:
 11. close
 ```
 
-`HTTP/1.1` is enforced everywhere the proxy participates: the MITM
+`HTTP/1.1` is enforced everywhere the proxy participates: the BITM
 side is a manual line-based parser, the curl_cffi side forces
 `http_version=1.1`. Browsers negotiate h2 only on the segments where
 the proxy isn't in the middle (impossible here).
@@ -321,10 +341,10 @@ the proxy isn't in the middle (impossible here).
 
 | | Why |
 |---|---|
-| HTTP/2 on the MITM client side | Manual h1 parser; h2 framing translation is meaningfully more code. Most auth flows are h1/h2 indistinguishable at the URL/cookie level so the cost/benefit is bad. |
+| HTTP/2 on the BITM client side | Manual h1 parser; h2 framing translation is meaningfully more code. Most auth flows are h1/h2 indistinguishable at the URL/cookie level so the cost/benefit is bad. |
 | WebSocket forwarding through curl_cffi | `curl_cffi` doesn't speak WS upgrades cleanly; we detect `Upgrade: websocket` and bypass impersonation. The plain raw-socket path forwards WS without intervention. |
 | Bodies over 50 MB on the impersonate path | Auth flows don't ship bulk media. Bypassing keeps memory bounded and avoids edge cases in `curl_cffi`'s streaming decode. |
-| TLS fingerprint forging on the *subject* side of the MITM | The forged cert is enough. The subject already trusts our CA; matching their TLS is unnecessary and would be hard since each subject browser has its own JA3. |
+| TLS fingerprint forging on the *subject* side of the BITM | The forged cert is enough. The subject already trusts our CA; matching their TLS is unnecessary and would be hard since each subject browser has its own JA3. |
 
 ---
 

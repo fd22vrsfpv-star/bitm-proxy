@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from backend.paths import data_dir
 
-logger = logging.getLogger("mitm-proxy.store")
+logger = logging.getLogger("bitm-proxy.store")
 
 DATA_DIR = data_dir()
 

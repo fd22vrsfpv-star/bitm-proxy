@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-IMAGE=mitm-proxy
-CONTAINER=mitm-proxy
-VOLUME=mitm-proxy-data
+IMAGE=bitm-proxy
+CONTAINER=bitm-proxy
+VOLUME=bitm-proxy-data
 
 # Colors for output
 RED='\033[0;31m'
@@ -27,7 +27,7 @@ fi
 # Check if Dockerfile exists
 if [ ! -f Dockerfile ]; then
     echo -e "${RED}Error: Dockerfile not found in current directory${NC}"
-    echo "Run this script from the mitm-proxy root directory"
+    echo "Run this script from the bitm-proxy root directory"
     exit 1
 fi
 

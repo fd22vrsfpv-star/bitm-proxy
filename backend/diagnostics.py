@@ -91,7 +91,7 @@ async def check_auth_proxy() -> dict:
             "Try clicking Stop then Start again in the Proxy tab.")
     return _ok(
         "Auth proxy",
-        f"running on :{port}  mitm={st.get('mitm_enabled')}  "
+        f"running on :{port}  bitm={st.get('bitm_enabled')}  "
         f"requests={st.get('request_count', 0)}  "
         f"injections={st.get('inject_count', 0)}",
         f"ca_cert_path={st.get('ca_cert_path')}")
@@ -116,15 +116,15 @@ async def check_ca_cert() -> dict:
     ca_path = data_dir() / "proxy_ca" / "ca.crt"
     if not ca_path.exists():
         return _warn(
-            "MITM CA cert",
+            "BITM CA cert",
             "not generated yet — starts the first time the auth proxy runs",
             str(ca_path))
     try:
         size = ca_path.stat().st_size
     except Exception:
         size = 0
-    return _ok("MITM CA cert", f"present at {ca_path}",
-                f"{size} bytes · install as a trusted root for silent HTTPS MITM")
+    return _ok("BITM CA cert", f"present at {ca_path}",
+                f"{size} bytes · install as a trusted root for silent HTTPS BITM")
 
 
 async def check_data_dir() -> dict:

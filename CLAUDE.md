@@ -42,6 +42,17 @@ mtime-checked on every call — so edits land within a second.
 **Existing examples:** `auth_milestones_config()`, `classify_rules(host)`,
 `response_error_rules_for(host)` in `backend/site_rules.py`.
 `backend/auth_milestones.py` is the canonical consumer pattern.
+`proxy_allowed_hosts()`/`host_allowed_for_proxy()` (also
+`backend/site_rules.py`) are a security-boundary variant: a flat list
+read fresh each call (no id-cache — it's not compiling anything, so
+follow `noisy_hosts()`'s simpler style, not the cached-regex style,
+when the rule is just a list) matched with a **strict** exact-hostname-
+or-exact-subdomain-suffix comparison, not the module's own
+`_host_matches()` substring/`"*.suffix"` matcher. `_host_matches()` is
+fine for noise-filtering heuristics but a bare substring pattern like
+`"microsoft.com"` would also match `evil-microsoft.com.attacker.net` —
+write a dedicated strict matcher for anything gating a real security
+boundary rather than reusing it.
 
 **Counter-examples to avoid:** any module-level `_FOO_RE = re.compile(...)`
 or `_FOO_HOSTS = (...)` that classifies request/response data. If you
@@ -57,8 +68,8 @@ plus your additions. Document this when you add a new YAML key.
 
 `backend/main.py`, `backend/debug_server.py`, and
 `frontend/package.json`. Bump `MINOR` for user-visible features (new
-tab, new endpoint, new proxy behaviour), `PATCH` for fixes. ARCHITECTURE.md
-documents this convention; SESSIONS.md is the per-feature reference and
+tab, new endpoint, new proxy behaviour), `PATCH` for fixes. docs/ARCHITECTURE.md
+documents this convention; docs/SESSIONS.md is the per-feature reference and
 must stay in sync.
 
 ## Frontend bundle is committed
@@ -84,10 +95,10 @@ applies automatically.
 ## Logging categories are stable
 
 `auth_proxy`, `browser`, `devices`, `flow`, `keepalive`, `site_rules`,
-`devtools`, etc. The dashboard filters and `journalctl -u mitm-proxy -g`
+`devtools`, etc. The dashboard filters and `journalctl -u bitm-proxy -g`
 greps depend on these. Pick an existing category for new log entries
 unless you're adding a real new subsystem; if so, document it in
-SESSIONS.md.
+docs/SESSIONS.md.
 
 ## Cross-origin endpoints are per-route, not global
 
@@ -134,3 +145,36 @@ above) own the policy decision; the API key still gates the actual
 
 If you add another global middleware that performs auth, give it the
 same `OPTIONS` short-circuit.
+
+## New `:8092`-only routes need a matching nginx entry, or they silently 200 with the wrong content
+
+**Rule:** Any route registered only on `backend/debug_server.py`
+(`:8092`) — not also on `backend/main.py` (`:8091`) — needs its own
+`location` block in `nginx/rtvbitm` routing to `app:8092`. This bit
+three separate times in one session (`/api/aaa/*`, `/api/phantom/*`,
+`/api/metrics`, `/api/test-graph` first; then
+`/api/rag/burp-extension/download`; then `/api/test-ropc`) before
+becoming a checklist item — it's exactly the kind of mistake that's
+easy to repeat because nothing raises an error.
+
+**Why:** `nginx/rtvbitm`'s general `location /api/ { proxy_pass
+app:8091; }` is a catch-all fallback for the `:8091`-side API surface.
+`backend/main.py` has its own SPA catch-all (`/{path:path}` →
+`FileResponse(static_dir / "index.html")` when the path isn't a real
+static file) that returns **200 with the frontend shell**, not a 404,
+for any path it doesn't recognize. A `:8092`-only route reached through
+the general `/api/` fallback therefore doesn't error — it silently
+serves the wrong content with a success status, which looks fine in a
+quick `curl -o /dev/null -w '%{http_code}'` check and only shows up if
+you actually inspect the response body. Confirmed live, not just
+reasoned about: this exact failure mode was reproduced for all three
+additions above before the matching `location` block was added.
+
+**How to apply it:** when you add a route to `backend/debug_server.py`
+that isn't also on `backend/main.py`, add a `location = /api/your-path
+{ proxy_pass http://app:8092/api/your-path; ...standard proxy headers...
+}` block to `nginx/rtvbitm` in the same change. If the route serves a
+file that needs to exist inside the image at all (like
+`burp-extension/RagScanBridge.py`), also check the `Dockerfile` actually
+`COPY`s that directory/file in — a second, related way this class of
+change goes silently missing.

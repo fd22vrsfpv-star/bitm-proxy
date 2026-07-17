@@ -15,6 +15,12 @@ Authorization:
   - Standard API key required (verify_ws_key on connect).
   - The `allow_phantom_join` config flag must be true. False = the
     `start` command returns `{type: "denied"}` without spawning.
+  - If `phantom_join_allowed_domains` is non-empty, the requested
+    `domain` must be in it (case-insensitive exact match) or the
+    `start` command returns `{type: "denied"}` without spawning. Empty
+    (the default) is unrestricted, matching today's behavior — this is
+    opt-in hardening for deployments (e.g. a publicly-reachable lab
+    instance) that must not run against an arbitrary real tenant.
   - Password is delivered to the runner via env var (PHANTOM_PASSWORD)
     so it never appears on the spawned process's argv (i.e. not
     visible to `ps`).
@@ -152,6 +158,13 @@ async def _spawn_runner(params: dict, run_dir: Path) -> asyncio.subprocess.Proce
         f"{repo_root}{os.pathsep}{existing_pp}" if existing_pp
         else str(repo_root)
     )
+    # Without this, CPython block-buffers stdout by default whenever it's
+    # not a tty (i.e. always, here, since it's piped to this parent) — the
+    # dashboard log/phase updates would arrive in delayed chunks instead of
+    # per-line, which matters most for phantom_join.py's device-code phases
+    # (tools/phantom_join.py run_cmd(..., stream=True)) where the operator
+    # has a 120s window to act on a line the moment it's printed.
+    env["PYTHONUNBUFFERED"] = "1"
 
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "tools.phantom_runner",
@@ -222,6 +235,16 @@ async def phantom_run_ws(ws: WebSocket):
                             "message": "username, password, domain are required"})
         await ws.close()
         return
+
+    allowed_domains = get_config_value("phantom_join_allowed_domains", [])
+    if allowed_domains:
+        requested_domain = _safe_str(params.get("domain")).lower()
+        if requested_domain not in {d.strip().lower() for d in allowed_domains if d}:
+            await ws.send_json({"type": "denied",
+                                "reason": f"domain {requested_domain!r} is not in "
+                                          "phantom_join_allowed_domains"})
+            await ws.close()
+            return
 
     # Acquire the lock atomically — wraps spawn so a race on two
     # concurrent `start` arrivals can't both pass the _is_busy check.

@@ -3,7 +3,7 @@ curl_cffi impersonation target.
 
 Single source of truth for the fingerprint-replay logic in
 backend/routes/browser.py (Playwright launch) and backend/auth_proxy.py
-(MITM upstream TLS). The classifier is deliberately regex-based and
+(BITM upstream TLS). The classifier is deliberately regex-based and
 explicit — no external UA-parser dep — because the distinctions we need
 are coarse (engine family only) and Playwright only ships three engines
 anyway.

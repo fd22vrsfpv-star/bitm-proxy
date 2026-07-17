@@ -1,12 +1,12 @@
 #!/bin/bash
-# Run the mitm-proxy stack natively on macOS / Linux (no Docker).
+# Run the bitm-proxy stack natively on macOS / Linux (no Docker).
 #
 # Layout:
 #   - Python control plane (main :8091, debug :8092, RAG :8000, rev-proxy :8085)
 #   - Go daemon            (reverse :8085, test :3129 — auth proxy yielded to Python)
 #
 # Data:
-#   ~/Library/Application Support/MitmProxy/{data,screenshots,certs}  (macOS)
+#   ~/Library/Application Support/BitmProxy/{data,screenshots,certs}  (macOS)
 #   $DATA_DIR / $SCREENSHOTS_DIR / $CERTS_DIR overrides env vars everywhere
 #
 # Flags:
@@ -117,11 +117,11 @@ if command -v docker >/dev/null 2>&1 \
     echo "⚠  A Docker container is holding these ports:"
     docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep -E '3128|3129|8091|8092' || true
     echo
-    echo "   Stop it first:   docker stop mitm-proxy"
+    echo "   Stop it first:   docker stop bitm-proxy"
     exit 1
 fi
 
-# ── Preflight: reap stale backend.run / mitm-proxies from a previous run ──
+# ── Preflight: reap stale backend.run / bitm-proxies from a previous run ──
 # A half-killed previous instance happily holds 8091/8092/3128, and the next
 # Python call then logs a bind failure we can't see (swallowed by uvicorn
 # _safe_serve). Kill any lingering ones up front.
@@ -139,7 +139,7 @@ _stale_kill() {
 echo "==> Reaping any stale stack processes from a previous run"
 _stale_kill 'python -m backend\.run'
 _stale_kill 'python .* backend\.run'
-_stale_kill "$SCRIPT_DIR/\.local/mitm-proxies"
+_stale_kill "$SCRIPT_DIR/\.local/bitm-proxies"
 # Give the kernel a moment to release the TCP sockets.
 sleep 1
 
@@ -243,11 +243,11 @@ if [ ! -d "$SCRIPT_DIR/static" ] || [ "$REBUILD" = 1 ]; then
 fi
 
 # ── Go daemon build ─────────────────────────────────────────────────────────
-GO_BIN="$SCRIPT_DIR/.local/mitm-proxies"
+GO_BIN="$SCRIPT_DIR/.local/bitm-proxies"
 mkdir -p "$SCRIPT_DIR/.local"
 if [ ! -x "$GO_BIN" ] || [ "$REBUILD" = 1 ]; then
     echo "==> Building Go daemon -> $GO_BIN"
-    (cd "$SCRIPT_DIR/go" && go build -o "$GO_BIN" ./cmd/mitm-proxies)
+    (cd "$SCRIPT_DIR/go" && go build -o "$GO_BIN" ./cmd/bitm-proxies)
 fi
 
 # ── Runtime env ─────────────────────────────────────────────────────────────
@@ -338,7 +338,7 @@ echo
 echo "────────────────────────────────────────────────────────────"
 echo "  Main:  http://127.0.0.1:8091/"
 echo "  Debug: http://127.0.0.1:8092/"
-echo "  Auth proxy: http://127.0.0.1:3128   (Python MITM)"
+echo "  Auth proxy: http://127.0.0.1:3128   (Python BITM)"
 echo "  Test proxy: http://127.0.0.1:3129   (Go pass-through)"
 echo "  Rev  proxy: http://127.0.0.1:8085   (Go)"
 echo "────────────────────────────────────────────────────────────"

@@ -57,7 +57,7 @@ def _ensure_file_logger():
     if _file_logger is not None:
         return
     log_path = _get_keepalive_log_dir() / "keepalive.log"
-    _file_logger = logging.getLogger("mitm-proxy-keepalive")
+    _file_logger = logging.getLogger("bitm-proxy-keepalive")
     _file_logger.setLevel(logging.DEBUG)
     _file_logger.propagate = False
     handler = logging.handlers.RotatingFileHandler(

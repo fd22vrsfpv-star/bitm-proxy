@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>bitm-proxy — DEF CON RTV Lab</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+      line-height: 1.6;
+    }
+    h1 { color: #58a6ff; font-size: 1.8em; margin-bottom: 4px; }
+    h2 { color: #79c0ff; font-size: 1.25em; margin-top: 40px; }
+    p  { color: #e6edf3; }
+    a.btn {
+      display: inline-block;
+      padding: 12px 22px;
+      margin: 12px 12px 4px 0;
+      background: #58a6ff;
+      color: #0d1117;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: 700;
+    }
+    a.btn.alt {
+      background: transparent;
+      color: #79c0ff;
+      border: 1px solid #30363d;
+    }
+    code, .creds {
+      font-family: Consolas, Menlo, monospace;
+      background: #010409;
+      border-left: 3px solid #58a6ff;
+      border-radius: 4px;
+      padding: 2px 6px;
+    }
+    .creds-block {
+      background: #010409;
+      border: 1px solid #30363d;
+      border-left: 3px solid #58a6ff;
+      border-radius: 6px;
+      padding: 16px 20px;
+      margin: 16px 0;
+    }
+    .creds-block div { margin: 4px 0; }
+    .warn {
+      background: rgba(255, 127, 14, 0.12);
+      border: 1px solid #ff7f0e;
+      border-radius: 6px;
+      padding: 14px 18px;
+      color: #ffb347;
+      margin: 20px 0;
+    }
+    .hint { color: #8b949e; font-size: 0.9em; }
+    hr { border: none; border-top: 1px solid #30363d; margin: 40px 0; }
+  </style>
+</head>
+<body>
+  <h1>bitm-proxy — Conditional Access Bypass Lab</h1>
+  <p class="hint">DEF CON Red Team Village — "Your Passkeys Won't Save You"</p>
+
+  <div class="warn">
+    <strong>Authorized lab use only.</strong> Everything below runs against a
+    dedicated test tenant the organizers control — not any real organization.
+    Please stay within the demo accounts provided; don't attempt to point
+    anything here at credentials or a domain you don't own.
+  </div>
+
+  <p>
+    This lab lets you drive the same Azure/Entra Conditional Access bypass
+    shown in the talk yourself, from your own browser — no software install,
+    no certificate to trust, no proxy to configure. Everything happens inside
+    a hosted browser session.
+  </p>
+
+  <a class="btn" href="/start" target="_blank" rel="noopener noreferrer">Start the lab session →</a>
+  <a class="btn alt" href="/dashboard/">Open the dashboard</a>
+
+  <h2>Demo credentials</h2>
+  <p>Use either account below inside the session — two are provided so two
+     people can use the lab at the same time without colliding.</p>
+  <div class="creds-block">
+    <div><strong>Account 1:</strong> <span class="creds">PLACEHOLDER-demo1@LABTENANT.onmicrosoft.com</span> / <span class="creds">PLACEHOLDER-password-1</span></div>
+    <div><strong>Account 2:</strong> <span class="creds">PLACEHOLDER-demo2@LABTENANT.onmicrosoft.com</span> / <span class="creds">PLACEHOLDER-password-2</span></div>
+  </div>
+  <p class="hint">(Organizers: replace these placeholders before the event —
+    see docs/DEFCON-LAB-SETUP.md.)</p>
+
+  <h2>What to try</h2>
+  <p><strong>Path A — push downgrade:</strong> sign in, let the method picker
+     load, and watch the session try the Authenticator push tile automatically.</p>
+  <p><strong>Path B — Phantom Join:</strong> in the dashboard's Phantom tab,
+     run the chain against the same account. Only one run happens at a time
+     lab-wide — if it says "busy," someone else is mid-run, try again shortly.</p>
+
+  <h2>Reconnaissance &amp; capture demos</h2>
+  <p><a href="/silent" target="_blank" rel="noopener noreferrer">Silent fingerprinting</a> —
+     visit this link and it captures your browser's device fingerprint with
+     no form, no visible interaction, then funnels you into the lab login
+     session — which <em>replays the exact device it just fingerprinted</em>,
+     so the IdP sees your real browser, not the server's. The same drive-by
+     recon-to-session technique covered in the talk, running against your own
+     browser.</p>
+  <p><a href="/lander" target="_blank" rel="noopener noreferrer">Credential lander page</a> —
+     a login-page template that demonstrates how a phishing lander captures
+     input and redirects to the real login portal afterward, so the flow
+     looks unbroken.</p>
+  <div class="warn">
+    <strong>Do not enter real credentials on the lander page.</strong> It
+    submits whatever you type to this lab's capture store and then sends
+    your browser on to the real Microsoft login portal. Type anything —
+    the point is to see the mechanism, not to actually sign in.
+  </div>
+
+  <hr>
+
+  <h2>Run this yourself</h2>
+  <p>
+    Want to try this against your own tenant instead of the lab one? This
+    entire lab is the same open-source Docker image — clone the repo and run
+    it under your own authorization:
+  </p>
+  <div class="creds-block">
+    <div>git clone https://github.com/fd22vrsfpv-star/bitm-proxy.git</div>
+    <div>cd bitm-proxy</div>
+    <div>./run_demo.sh &nbsp;&nbsp;# macOS / Linux — or .\run_demo.ps1 on Windows</div>
+  </div>
+  <p class="hint">
+    Defaults to <code>https://127.0.0.1/</code>, reachable only from your own
+    machine. Works on Linux, macOS (including Apple Silicon), and Windows
+    (Docker Desktop, WSL2 backend recommended) — see the repo's
+    <code>docs/DEFCON-LAB-SETUP.md</code> for details, including the
+    self-signed-certificate step for local use.
+  </p>
+
+  <p class="hint" style="margin-top:48px">
+    github.com/fd22vrsfpv-star/bitm-proxy — DEF CON Red Team Village 2025
+  </p>
+</body>
+</html>

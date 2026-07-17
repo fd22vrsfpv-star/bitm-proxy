@@ -7,7 +7,7 @@ playwright>=1.40
 cryptography>=42.0
 pyyaml>=6.0
 msgpack>=1.0
-# TLS-fingerprint impersonation for the :3128 MITM upstream leg.
+# TLS-fingerprint impersonation for the :3128 BITM upstream leg.
 # Bundled libcurl-impersonate ships inside the wheels; no native build.
 curl_cffi>=0.6
 pywin32>=306; sys_platform == "win32"
