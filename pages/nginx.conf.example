@@ -1,9 +1,9 @@
-# nginx site config for the mitm-proxy landing page + optional dashboard
+# nginx site config for the bitm-proxy landing page + optional dashboard
 # reverse-proxy. Targets example.com — replace server_name and the
 # Let's Encrypt paths for other hosts.
 #
-# Drop into: /etc/nginx/sites-available/mitm-landing
-# Enable:    sudo ln -s /etc/nginx/sites-available/mitm-landing /etc/nginx/sites-enabled/
+# Drop into: /etc/nginx/sites-available/bitm-landing
+# Enable:    sudo ln -s /etc/nginx/sites-available/bitm-landing /etc/nginx/sites-enabled/
 # Test:      sudo nginx -t
 # Reload:    sudo systemctl reload nginx
 #
@@ -39,7 +39,7 @@ server {
     index proxy-3129.html index.html;
 
     # Basic auth on the whole vhost; every location inherits.
-    auth_basic           "mitm-proxy — restricted";
+    auth_basic           "bitm-proxy — restricted";
     auth_basic_user_file /etc/nginx/.htpasswd;
 
     location / {
@@ -54,7 +54,7 @@ server {
     # is useful as a "does my proxy routing work?" probe.
     location = /proxy   { return 302 http://$host:3129/; }   # Go test proxy
     location = /3129    { return 302 http://$host:3129/; }
-    location = /mitm    { return 302 http://$host:3128/; }   # Python MITM
+    location = /bitm    { return 302 http://$host:3128/; }   # Python BITM
     location = /3128    { return 302 http://$host:3128/; }
 
     # Optional: expose the :8092 debug dashboard via /dashboard/. Comment out
@@ -163,7 +163,7 @@ server {
 #     ssl_certificate     /etc/letsencrypt/live/www.example.com/fullchain.pem;
 #     ssl_certificate_key /etc/letsencrypt/live/www.example.com/privkey.pem;
 #
-#     auth_basic           "mitm-proxy app — restricted";
+#     auth_basic           "bitm-proxy app — restricted";
 #     auth_basic_user_file /etc/nginx/.htpasswd;
 #
 #     location / {

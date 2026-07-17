@@ -31,7 +31,7 @@ for port in 8000 8085 8091 8092 3128 3129; do
 done
 
 head "Process tree"
-for pat in 'backend\.run' '/\.local/mitm-proxies' 'headless_shell' 'playwright'; do
+for pat in 'backend\.run' '/\.local/bitm-proxies' 'headless_shell' 'playwright'; do
     count="$(pgrep -af "$pat" 2>/dev/null | wc -l | tr -d ' ')"
     if [ "$count" -gt 0 ]; then
         ok "$pat  ($count process(es))"
@@ -73,16 +73,16 @@ else
     bad "auth proxy :3128 plain-HTTP — connection failed"
 fi
 code="$(curl -sk -x http://127.0.0.1:3128 -o /dev/null -w '%{http_code}' --max-time 10 https://example.com 2>/dev/null)"
-[ "$code" = "200" ] && ok "auth proxy :3128 HTTPS via MITM (200 OK)" || bad "auth proxy :3128 HTTPS returned $code (client CA not trusted is OK; connection failure is not)"
+[ "$code" = "200" ] && ok "auth proxy :3128 HTTPS via BITM (200 OK)" || bad "auth proxy :3128 HTTPS returned $code (client CA not trusted is OK; connection failure is not)"
 code="$(curl -sk -x http://127.0.0.1:3129 -o /dev/null -w '%{http_code}' --max-time 5 https://example.com 2>/dev/null)"
 [ "$code" = "200" ] && ok "test proxy :3129 HTTPS (200 OK)" || bad "test proxy :3129 HTTPS returned $code"
 
 head "Uvicorn recent errors"
 # Look for crashes or tracebacks that would leave endpoints dark.
-if [ -f /var/log/mitm-proxy.log ]; then
-    tail -50 /var/log/mitm-proxy.log | grep -iE 'error|exception|traceback|fail' | tail -5 || ok "no recent errors in /var/log/mitm-proxy.log"
+if [ -f /var/log/bitm-proxy.log ]; then
+    tail -50 /var/log/bitm-proxy.log | grep -iE 'error|exception|traceback|fail' | tail -5 || ok "no recent errors in /var/log/bitm-proxy.log"
 else
-    warn "no /var/log/mitm-proxy.log — check journalctl -u mitm-proxy if you run via systemd, or the terminal that spawned run-local.sh"
+    warn "no /var/log/bitm-proxy.log — check journalctl -u bitm-proxy if you run via systemd, or the terminal that spawned run-local.sh"
 fi
 
 head "Quick client-path verification"

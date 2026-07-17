@@ -154,7 +154,7 @@ def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
         "url": first.get("url") or f"https://{host}/",
         "severity": "info",
         "confidence": "firm",
-        "source": "mitm-proxy",
+        "source": "bitm-proxy",
         "evidence": ["\n".join(evidence_parts)],
         "description": " ".join(description_parts),
         "request_raw": req_raw,
@@ -209,7 +209,7 @@ async def submit_flow_as_finding(
     if engagement_id:
         finding["engagement_id"] = engagement_id
 
-    payload = {"source": "mitm-proxy", "findings": [finding]}
+    payload = {"source": "bitm-proxy", "findings": [finding]}
     endpoint = f"{url}/import/findings-exchange"
 
     append_log("info", "rag_bridge",

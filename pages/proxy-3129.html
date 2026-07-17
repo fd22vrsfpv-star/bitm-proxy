@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>mitm-proxy — test proxy on :3129</title>
+  <title>bitm-proxy — test proxy on :3129</title>
   <style>
     body { font: 14px/1.55 -apple-system, system-ui, sans-serif; max-width: 720px;
            margin: 40px auto; padding: 0 20px; color: #1f2937; }
@@ -17,13 +17,13 @@
   </style>
 </head>
 <body>
-  <h1>mitm-proxy — test proxy on :3129</h1>
+  <h1>bitm-proxy — test proxy on :3129</h1>
   <p>You will be redirected to the test proxy in <span id="sec">3</span>s —
      or click a button below.</p>
 
   <p>
     <a class="btn"     id="link-3129" href="#">Open :3129 (Go test proxy)</a>
-    <a class="btn alt" id="link-3128" href="#">Open :3128 (Python MITM)</a>
+    <a class="btn alt" id="link-3128" href="#">Open :3128 (Python BITM)</a>
     <a class="btn alt" id="link-8092" href="#">Dashboard :8092</a>
   </p>
 
@@ -31,7 +31,7 @@
     Direct navigation to a proxy port isn't normal usage — configure
     FoxyProxy / Chrome / system proxy to
     <code id="proxy-host">HOST:3129</code> (HTTP type), then browse any HTTPS
-    site. Use <code id="mitm-host">HOST:3128</code> for the Python MITM with
+    site. Use <code id="bitm-host">HOST:3128</code> for the Python BITM with
     credential injection.
   </p>
 
@@ -45,7 +45,7 @@
       document.getElementById('link-3128').href = 'http://' + host + ':3128/';
       document.getElementById('link-8092').href = 'http://' + host + ':8092/';
       document.getElementById('proxy-host').textContent = host + ':3129';
-      document.getElementById('mitm-host').textContent = host + ':3128';
+      document.getElementById('bitm-host').textContent = host + ':3128';
 
       // Countdown + redirect
       var s = 3, el = document.getElementById('sec');

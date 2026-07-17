@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mitm-proxy/go/internal/flowclient"
+	"github.com/bitm-proxy/go/internal/flowclient"
 )
 
 const LandingHTML = `<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>MITM Reverse Proxy</title>
+<head><meta charset="utf-8"><title>BITM Reverse Proxy</title>
 <style>
 body{font-family:system-ui,-apple-system,sans-serif;background:#0a0a1a;color:#e2e8f0;margin:0;padding:40px;max-width:720px}
 h1{color:#7dd3fc;margin-bottom:8px}
@@ -44,7 +44,7 @@ button:hover{background:#264a72}
 .badge{display:inline-block;padding:2px 8px;background:#064e3b;color:#4ade80;border:1px solid #22c55e55;border-radius:3px;font-size:12px;font-family:monospace;margin-left:8px}
 </style></head>
 <body>
-<h1>MITM Reverse Proxy <span class="badge">Go</span></h1>
+<h1>BITM Reverse Proxy <span class="badge">Go</span></h1>
 <div class="sub">Multi-tenant transparent proxy. Every req/resp pair is captured to the Flow Trace tab on the debug dashboard (:8092) under session <code>revproxy_&lt;hostname&gt;</code>.</div>
 
 <form onsubmit="event.preventDefault();go()">

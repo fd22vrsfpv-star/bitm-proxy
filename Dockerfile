@@ -8,8 +8,8 @@ RUN npm run build
 
 # ── Stage 2: Python runtime ──
 FROM python:3.12-slim
-LABEL maintainer="mitm-proxy"
-LABEL description="MITM Proxy — Remote browser login for any site"
+LABEL maintainer="bitm-proxy"
+LABEL description="BITM Proxy — Remote browser login for any site"
 
 WORKDIR /app
 

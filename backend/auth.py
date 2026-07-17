@@ -1,4 +1,4 @@
-"""API key authentication for mitm-proxy endpoints.
+"""API key authentication for bitm-proxy endpoints.
 
 On first startup, generates a random 256-bit key, prints it once to stdout,
 and saves the hash to DATA_DIR/.api_key_hash. Subsequent requests must include
@@ -15,7 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.paths import data_dir
 
-logger = logging.getLogger("mitm-proxy.auth")
+logger = logging.getLogger("bitm-proxy.auth")
 
 _KEY_HASH: str = ""
 _SKIP_PATHS = {"/health", "/healthz", "/api/capture/external"}

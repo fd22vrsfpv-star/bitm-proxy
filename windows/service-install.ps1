@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Install MITM Proxy as a Windows service.
+    Install BITM Proxy as a Windows service.
     Runs on boot, no console window, survives logoff.
 
 .NOTES
@@ -9,7 +9,7 @@
 #>
 
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\MitmProxy"
+    [string]$InstallDir = "$env:LOCALAPPDATA\BitmProxy"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,12 +18,12 @@ $appDir = "$InstallDir\app"
 $venvPython = "$appDir\venv\Scripts\python.exe"
 
 if (-not (Test-Path $venvPython)) {
-    Write-Error "MITM Proxy not installed. Run install.ps1 first."
+    Write-Error "BITM Proxy not installed. Run install.ps1 first."
     exit 1
 }
 
 Write-Host ""
-Write-Host "  MITM Proxy - Service Installer" -ForegroundColor Cyan
+Write-Host "  BITM Proxy - Service Installer" -ForegroundColor Cyan
 Write-Host ""
 
 # Install pywin32 if needed
@@ -53,7 +53,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "  Service installed!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  Service name:  MitmProxy"
+    Write-Host "  Service name:  BitmProxy"
     Write-Host "  Startup type:  Automatic"
     Write-Host "  Main app:      http://localhost:8091"
     Write-Host "  Debug:         http://localhost:8092"
@@ -62,7 +62,7 @@ if ($LASTEXITCODE -eq 0) {
 
     $start = Read-Host "Start service now? (Y/n)"
     if ($start -ne 'n') {
-        Start-Service MitmProxy
+        Start-Service BitmProxy
         Write-Host "Service started." -ForegroundColor Green
         Start-Process "http://localhost:8091"
     }
@@ -72,9 +72,9 @@ if ($LASTEXITCODE -eq 0) {
 
 Write-Host ""
 Write-Host "  Management commands:" -ForegroundColor Gray
-Write-Host "    Start:   Start-Service MitmProxy"
-Write-Host "    Stop:    Stop-Service MitmProxy"
-Write-Host "    Restart: Restart-Service MitmProxy"
-Write-Host "    Status:  Get-Service MitmProxy"
+Write-Host "    Start:   Start-Service BitmProxy"
+Write-Host "    Stop:    Stop-Service BitmProxy"
+Write-Host "    Restart: Restart-Service BitmProxy"
+Write-Host "    Status:  Get-Service BitmProxy"
 Write-Host "    Remove:  windows\service-remove.ps1"
 Write-Host ""

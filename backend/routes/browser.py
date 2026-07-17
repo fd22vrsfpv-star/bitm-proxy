@@ -308,7 +308,7 @@ def _entries_to_har(entries: list, session_id: str) -> dict:
     return {
         "log": {
             "version": "1.2",
-            "creator": {"name": "mitm-proxy", "version": "1.0"},
+            "creator": {"name": "bitm-proxy", "version": "1.0"},
             "browser": {"name": "Playwright", "version": "—"},
             "pages": [],
             "entries": har_entries,
@@ -1350,8 +1350,8 @@ async def launch_auto_session(login_url: str, *, site_id: str = "",
         # Modern Chromium silently drops --ignore-certificate-errors
         # unless --test-type is also set. Without the pair, the
         # browser still sends SSLV3_ALERT_CERTIFICATE_UNKNOWN to the
-        # MITM proxy on every leaf it doesn't trust (visible in the
-        # auth_proxy log as "MITM TLS handshake failed for ...").
+        # BITM proxy on every leaf it doesn't trust (visible in the
+        # auth_proxy log as "BITM TLS handshake failed for ...").
         chromium_args += ["--ignore-certificate-errors", "--test-type"]
 
     launch_opts: dict = {"headless": True, "args": chromium_args}
@@ -1940,7 +1940,7 @@ async def browser_session(
             context_opts.update(device_scale_factor=dpr)
 
         # Fingerprint replay — if the user has been browsing the target
-        # through the MITM on :3128, adopt their real User-Agent + client
+        # through the BITM on :3128, adopt their real User-Agent + client
         # hints + Accept-Language so the IdP sees the same device it
         # already trusts. Off by default; enable via config.
         if get_config_value("use_captured_fingerprint", False):
@@ -3507,7 +3507,7 @@ async def download_auth_proxy_ca():
     return Response(content=cert_path.read_bytes(),
                      media_type="application/x-pem-file",
                      headers={"Content-Disposition":
-                              'attachment; filename="mitm-proxy-ca.crt"'})
+                              'attachment; filename="bitm-proxy-ca.crt"'})
 
 
 @router.post("/auth_proxy/ca")

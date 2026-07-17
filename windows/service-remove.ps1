@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Remove the MITM Proxy Windows service.
+    Remove the BITM Proxy Windows service.
 
 .NOTES
     Run as Administrator:
@@ -8,21 +8,21 @@
 #>
 
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\MitmProxy"
+    [string]$InstallDir = "$env:LOCALAPPDATA\BitmProxy"
 )
 
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
-Write-Host "  MITM Proxy - Service Removal" -ForegroundColor Cyan
+Write-Host "  BITM Proxy - Service Removal" -ForegroundColor Cyan
 Write-Host ""
 
 # Stop service if running
-$svc = Get-Service -Name "MitmProxy" -ErrorAction SilentlyContinue
+$svc = Get-Service -Name "BitmProxy" -ErrorAction SilentlyContinue
 if ($svc) {
     if ($svc.Status -eq "Running") {
         Write-Host "Stopping service..." -ForegroundColor Yellow
-        Stop-Service MitmProxy -Force
+        Stop-Service BitmProxy -Force
         Start-Sleep -Seconds 2
     }
 
@@ -35,12 +35,12 @@ if ($svc) {
         Pop-Location
     } else {
         # Fallback: use sc.exe
-        sc.exe delete MitmProxy
+        sc.exe delete BitmProxy
     }
 
     Write-Host "Service removed." -ForegroundColor Green
 } else {
-    Write-Host "Service 'MitmProxy' not found." -ForegroundColor Yellow
+    Write-Host "Service 'BitmProxy' not found." -ForegroundColor Yellow
 }
 
 # Clean up machine-level env vars

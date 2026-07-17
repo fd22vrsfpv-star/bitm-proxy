@@ -88,7 +88,7 @@ async def main():
     if get_config_value("keepalive_enabled", False):
         await start_keepalive()
 
-    # Auto-start the auth proxy (MITM on :3128 by default) if enabled.
+    # Auto-start the auth proxy (BITM on :3128 by default) if enabled.
     if get_config_value("autostart_auth_proxy", True):
         try:
             from backend.auth_proxy import start_auth_proxy

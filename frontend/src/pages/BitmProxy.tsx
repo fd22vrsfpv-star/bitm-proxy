@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import BrowserAuth from "../components/BrowserAuth";
 import { apiFetch } from "../api/client";
 
-export default function MitmProxy() {
+export default function BitmProxy() {
   const [loginUrl, setLoginUrl] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [error, setError] = useState("");

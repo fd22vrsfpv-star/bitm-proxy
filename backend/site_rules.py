@@ -150,7 +150,7 @@ def host_matches_body_capture(host: str) -> bool:
 
 
 def proxy_allowed_hosts() -> list[str]:
-    """Hostname allowlist for the :3128 auth proxy's MITM interception.
+    """Hostname allowlist for the :3128 auth proxy's BITM interception.
 
     Empty (the default) means unrestricted — every existing install keeps
     today's behavior. Non-empty is opt-in hardening for deployments (e.g. a
@@ -176,7 +176,7 @@ def _host_allowed(patterns: list[str], host: str) -> bool:
 
 
 def host_allowed_for_proxy(host: str) -> bool:
-    """True if the :3128 proxy should MITM this host. Always True when
+    """True if the :3128 proxy should BITM this host. Always True when
     proxy_allowed_hosts() is empty (unrestricted default)."""
     allowed = proxy_allowed_hosts()
     if not allowed:

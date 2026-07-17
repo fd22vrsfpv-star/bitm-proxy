@@ -1,6 +1,6 @@
-# MITM Proxy — Architecture
+# BITM Proxy — Architecture
 
-What this repo is: a forging-CA MITM proxy + a Playwright-driven remote
+What this repo is: a forging-CA BITM proxy + a Playwright-driven remote
 browser + a debug dashboard, glued together so an operator can capture
 auth state from a real subject's browser, replay it on the server, and
 launch fresh authenticated Playwright sessions.
@@ -8,7 +8,7 @@ launch fresh authenticated Playwright sessions.
 For per-feature mechanics (every session type, every config variable,
 the data layout, the relationship diagram) read **`SESSIONS.md`** —
 that file is the canonical reference and stays in sync with the code.
-For the deepest dive into how the on-the-wire MITM works (TLS forging,
+For the deepest dive into how the on-the-wire BITM works (TLS forging,
 upstream impersonation, fingerprint replay, the device probe), read
 **`PROXY_DEEP_DIVE.md`**.
 
@@ -20,12 +20,12 @@ This document is the high-level component map.
 
 | Port | Purpose | Module |
 |---|---|---|
-| **3128** | Forging-CA MITM proxy. Browsers/tools point here. CONNECT tunnels are MITM'd against a generated CA so HTTPS traffic is observable; HTTP/1.1 only on the upstream leg (`curl_cffi` impersonation forces it). | `backend/auth_proxy.py` |
+| **3128** | Forging-CA BITM proxy. Browsers/tools point here. CONNECT tunnels are BITM'd against a generated CA so HTTPS traffic is observable; HTTP/1.1 only on the upstream leg (`curl_cffi` impersonation forces it). | `backend/auth_proxy.py` |
 | **8091** | Operator browser. Serves the React SPA (`frontend/dist/proxy-assets/` → `static/proxy-assets/`); renders a Playwright session as a JPEG canvas via WebSocket. Click/scroll/keystroke roundtrip. | `backend/main.py` + `backend/routes/browser.py` |
 | **8092** | Debug dashboard. Single-page Python-rendered HTML with two WebSockets (`/ws/control` for commands, `/ws/data` for log/flow streaming). Runs the auth proxy on demand, shows captures, drives flow analysis, hosts the Devices tab. | `backend/debug_server.py` |
 | **8000** | RAG API. Implements the RAG Scan Stack-compatible findings surface (`/health`, `/scope*`, `/engagements*`, `/findings/search`, `/export`, `/import`) that `burp-extension/RagScanBridge.py` calls, so that extension works against this built-in API with no external RAG Scan Stack backend. Captured flows become findings via `backend/rag_bridge.py`. Disabled if `RAG_PORT` isn't bound. | `backend/rag_api.py`, `backend/rag_bridge.py` |
 | **8085** | Reverse proxy. Browse `http://localhost:8085/_r/<host>/<path>` (or use the form on `/`) to fetch a target URL through this proxy with logging — handy for replays from a single-tab debugging stance. | `backend/reverse_proxy.py` |
-| **3129** | Test proxy (Go). Pass-through HTTP/HTTPS proxy without MITM, used to A/B against `:3128` when diagnosing. | `go/cmd/mitm-proxies` |
+| **3129** | Test proxy (Go). Pass-through HTTP/HTTPS proxy without BITM, used to A/B against `:3128` when diagnosing. | `go/cmd/bitm-proxies` |
 
 `backend/run.py` is the process entry point. `:8091`, `:8092`, `:8000`,
 `:8085` are separate uvicorn instances inside the same Python process.
@@ -42,7 +42,7 @@ The core app above is topology-agnostic — everything so far describes
 Three ways to launch it:
 
 1. **`run-local.sh`** — native, all ports on `127.0.0.1` directly.
-2. **`docker rm -f mitm-proxy && docker build ...`** — single container,
+2. **`docker rm -f bitm-proxy && docker build ...`** — single container,
    `:8091`/`:8092` published directly. Same topology as native, just
    containerized.
 3. **`docker-compose.yml`** (the DEF CON RTV Lab) — a genuinely different
@@ -70,7 +70,7 @@ backend/
 ├── run.py            # Process entry — boots :8091, :8092, :3128
 ├── main.py           # FastAPI app on :8091 (operator browser SPA)
 ├── debug_server.py   # FastAPI app on :8092 (dashboard, WS control + data)
-├── auth_proxy.py     # MITM TCP listener on :3128 — forges CA, MITMs HTTPS,
+├── auth_proxy.py     # BITM TCP listener on :3128 — forges CA, BITMs HTTPS,
 │                     #   captures fingerprints, impersonates upstream TLS via
 │                     #   curl_cffi, intercepts the device-probe sentinel path
 ├── ua_engine.py      # UA → Playwright engine family + curl_cffi impersonate tag
@@ -117,7 +117,7 @@ trace. `$DATA_DIR/sites.yaml` is deep-merged on top so per-install
 customisations don't get clobbered on upgrade.
 
 `globals.proxy_allowed_hosts` (empty/unrestricted by default) is a hostname
-allowlist for `:3128`'s MITM interception, checked via
+allowlist for `:3128`'s BITM interception, checked via
 `site_rules.host_allowed_for_proxy()` before `_handle_connect()`/
 `_handle_http()` decide whether to forge a cert or just tunnel bytes
 untouched. Opt-in hardening for deployments that must not be usable to
@@ -137,7 +137,7 @@ frontend/
     ├── App.tsx            # Top-level layout
     ├── index.css          # Tailwind + dark theme tokens
     ├── pages/
-    │   └── MitmProxy.tsx  # Reads ?url=, ?private, ?device_id from
+    │   └── BitmProxy.tsx  # Reads ?url=, ?private, ?device_id from
     │                       # location.search → mounts <BrowserAuth>
     ├── components/
     │   └── BrowserAuth.tsx# Canvas + WebSocket to /api/browser/session.
@@ -146,7 +146,7 @@ frontend/
     │                       # backend can launch with a saved profile.
     ├── api/
     │   ├── client.ts      # apiFetch + wsUrl with API key handling
-    │   └── mitmProxy.ts   # Typed wrappers for the operator-browser app
+    │   └── bitmProxy.ts   # Typed wrappers for the operator-browser app
     └── lib/utils.ts
 ```
 
@@ -194,7 +194,7 @@ The dashboard re-mounts the same `browser_routes` and `devices_routes`
 under itself so workflows that target `:8092` (the operator can prefer
 one origin) keep working.
 
-### `:3128` — MITM proxy
+### `:3128` — BITM proxy
 
 Configure your browser/tool to use `http://127.0.0.1:3128` as its HTTP
 + HTTPS proxy. After installing the forged CA from
@@ -228,10 +228,10 @@ register-from-capture ─► backend.devices.register_from_capture(host, modes, 
                           ├─ snapshot fingerprint + (if 'creds') cookies/headers
                           └─ if 'probe'/'creds': stamp _pending_probes[host]
 
-next GET on host    ─► auth_proxy._handle_http / _mitm_connect
+next GET on host    ─► auth_proxy._handle_http / _bitm_connect
                           └─ serves a synthetic 200 with JS that POSTs
                              tz/screen/viewport/languages/platform back to
-                             /__mitm_probe_callback (intercepted in-proxy,
+                             /__bitm_probe_callback (intercepted in-proxy,
                              never reaches upstream); meta-refresh to original
 
 probe callback      ─► backend.devices.apply_probe_result(...)
@@ -270,7 +270,7 @@ Current: **1.1.0** — adds the Devices tab.
 
 ## Key design decisions
 
-1. **Forging-CA MITM, not a Chromium extension or Playwright `route()` shim.** A real proxy on `:3128` works for *anything* that speaks HTTP — browsers, mobile apps via Wi-Fi proxy, curl, any tool — without modifying the subject. The forged CA is a one-time trust-store install; from then on the subject sees normal HTTPS.
+1. **Forging-CA BITM, not a Chromium extension or Playwright `route()` shim.** A real proxy on `:3128` works for *anything* that speaks HTTP — browsers, mobile apps via Wi-Fi proxy, curl, any tool — without modifying the subject. The forged CA is a one-time trust-store install; from then on the subject sees normal HTTPS.
 2. **Atomic JSON over a database.** Operators run this in pentest VMs / labs / containers; "no DB to install or upgrade" is a feature. `JsonStore` uses temp-file-plus-rename so no half-written files survive a crash.
 3. **Server-side log + flow buffer, not browser-side localStorage.** The dashboard reconnects mean nothing if the buffer lived in the tab. `shared._logs` and `_session_flows` are owned by the backend; WS subscribers receive history then live tail.
 4. **Single Python process, multiple uvicorn instances.** `:8091` and `:8092` share `_live_pages`, `_captured_sessions`, `shared._logs` directly via in-process dicts — no IPC. `:3128` is a TCP listener inside the same loop. Saves a serialisation tax that doesn't buy anything in this footprint.

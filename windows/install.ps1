@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    MITM Proxy - Windows standalone installer.
+    BITM Proxy - Windows standalone installer.
     Installs Python, Node.js (if missing), builds the frontend, installs
     Python dependencies + Playwright browsers, and creates a Start Menu shortcut.
 
@@ -10,7 +10,7 @@
 #>
 
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\MitmProxy",
+    [string]$InstallDir = "$env:LOCALAPPDATA\BitmProxy",
     [switch]$SkipPython,
     [switch]$SkipNode,
     [switch]$NoBrowser   # don't open the browser after install
@@ -30,7 +30,7 @@ if (-not (Test-Path "$RepoRoot\backend\main.py")) {
 
 Write-Host ""
 Write-Host "====================================" -ForegroundColor Cyan
-Write-Host "  MITM Proxy - Windows Installer"     -ForegroundColor Cyan
+Write-Host "  BITM Proxy - Windows Installer"     -ForegroundColor Cyan
 Write-Host "====================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Repo root  : $RepoRoot"
@@ -173,7 +173,7 @@ Write-Host "Creating launcher scripts..." -ForegroundColor Yellow
 # Batch launcher
 $batContent = @"
 @echo off
-title MITM Proxy
+title BITM Proxy
 cd /d "$appDir"
 
 set DATA_DIR=$InstallDir\data
@@ -182,7 +182,7 @@ set CERTS_DIR=$InstallDir\certs
 set PYTHONUNBUFFERED=1
 
 echo.
-echo  MITM Proxy
+echo  BITM Proxy
 echo  ================================
 echo  Main app:        http://localhost:8091
 echo  Debug dashboard: http://localhost:8092
@@ -194,7 +194,7 @@ start "" "http://localhost:8091"
 "$venvDir\Scripts\python.exe" -m backend.run
 pause
 "@
-Set-Content -Path "$InstallDir\MitmProxy.bat" -Value $batContent -Encoding ASCII
+Set-Content -Path "$InstallDir\BitmProxy.bat" -Value $batContent -Encoding ASCII
 
 # PowerShell launcher (alternative)
 $ps1Content = @"
@@ -206,7 +206,7 @@ $ps1Content = @"
 Set-Location "$appDir"
 
 Write-Host ""
-Write-Host "  MITM Proxy" -ForegroundColor Cyan
+Write-Host "  BITM Proxy" -ForegroundColor Cyan
 Write-Host "  Main app:        http://localhost:8091"
 Write-Host "  Debug dashboard: http://localhost:8092"
 Write-Host "  Data dir:        `$env:DATA_DIR"
@@ -215,28 +215,28 @@ Write-Host ""
 Start-Process "http://localhost:8091"
 & "$venvDir\Scripts\python.exe" -m backend.run
 "@
-Set-Content -Path "$InstallDir\MitmProxy.ps1" -Value $ps1Content -Encoding UTF8
+Set-Content -Path "$InstallDir\BitmProxy.ps1" -Value $ps1Content -Encoding UTF8
 
 # ── 9. Create Start Menu shortcut ────────────────────────
 
 Write-Host "Creating Start Menu shortcut..." -ForegroundColor Yellow
 
 $startMenu = [System.Environment]::GetFolderPath("Programs")
-$shortcutPath = "$startMenu\MITM Proxy.lnk"
+$shortcutPath = "$startMenu\BITM Proxy.lnk"
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = "$InstallDir\MitmProxy.bat"
+$shortcut.TargetPath = "$InstallDir\BitmProxy.bat"
 $shortcut.WorkingDirectory = $InstallDir
-$shortcut.Description = "MITM Proxy - Remote browser login and API testing"
+$shortcut.Description = "BITM Proxy - Remote browser login and API testing"
 $shortcut.Save()
 
 # Also create a Desktop shortcut
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
-$deskShortcut = $shell.CreateShortcut("$desktopPath\MITM Proxy.lnk")
-$deskShortcut.TargetPath = "$InstallDir\MitmProxy.bat"
+$deskShortcut = $shell.CreateShortcut("$desktopPath\BITM Proxy.lnk")
+$deskShortcut.TargetPath = "$InstallDir\BitmProxy.bat"
 $deskShortcut.WorkingDirectory = $InstallDir
-$deskShortcut.Description = "MITM Proxy - Remote browser login and API testing"
+$deskShortcut.Description = "BITM Proxy - Remote browser login and API testing"
 $deskShortcut.Save()
 
 Write-Host "Shortcuts created." -ForegroundColor Green
@@ -244,14 +244,14 @@ Write-Host "Shortcuts created." -ForegroundColor Green
 # ── 10. Create uninstaller ────────────────────────────────
 
 $uninstallContent = @"
-# MITM Proxy Uninstaller
+# BITM Proxy Uninstaller
 `$installDir = "$InstallDir"
-`$confirm = Read-Host "Remove MITM Proxy from '`$installDir'? (y/N)"
+`$confirm = Read-Host "Remove BITM Proxy from '`$installDir'? (y/N)"
 if (`$confirm -eq 'y') {
     Remove-Item "`$installDir" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$startMenu\MITM Proxy.lnk" -Force -ErrorAction SilentlyContinue
-    Remove-Item "$desktopPath\MITM Proxy.lnk" -Force -ErrorAction SilentlyContinue
-    Write-Host "MITM Proxy removed." -ForegroundColor Green
+    Remove-Item "$startMenu\BITM Proxy.lnk" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$desktopPath\BITM Proxy.lnk" -Force -ErrorAction SilentlyContinue
+    Write-Host "BITM Proxy removed." -ForegroundColor Green
 } else {
     Write-Host "Cancelled."
 }
@@ -268,8 +268,8 @@ Write-Host ""
 Write-Host "  Install location: $InstallDir"
 Write-Host "  Data directory:   $InstallDir\data"
 Write-Host ""
-Write-Host "  To start:  double-click 'MITM Proxy' on Desktop"
-Write-Host "             or run: $InstallDir\MitmProxy.bat"
+Write-Host "  To start:  double-click 'BITM Proxy' on Desktop"
+Write-Host "             or run: $InstallDir\BitmProxy.bat"
 Write-Host ""
 Write-Host "  Main app:        http://localhost:8091"
 Write-Host "  Debug dashboard: http://localhost:8092"
@@ -278,8 +278,8 @@ Write-Host "  To uninstall:  powershell $InstallDir\uninstall.ps1"
 Write-Host ""
 
 if (-not $NoBrowser) {
-    $run = Read-Host "Start MITM Proxy now? (Y/n)"
+    $run = Read-Host "Start BITM Proxy now? (Y/n)"
     if ($run -ne 'n') {
-        Start-Process "$InstallDir\MitmProxy.bat"
+        Start-Process "$InstallDir\BitmProxy.bat"
     }
 }

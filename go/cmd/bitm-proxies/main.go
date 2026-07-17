@@ -1,4 +1,4 @@
-// Command mitm-proxies runs the Go-ported proxy services in a single binary.
+// Command bitm-proxies runs the Go-ported proxy services in a single binary.
 //
 // Services:
 //   - reverse proxy on RP_PORT  (default 8085)
@@ -21,11 +21,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mitm-proxy/go/internal/authproxy"
-	"github.com/mitm-proxy/go/internal/flowclient"
-	"github.com/mitm-proxy/go/internal/pyclient"
-	"github.com/mitm-proxy/go/internal/revproxy"
-	"github.com/mitm-proxy/go/internal/testproxy"
+	"github.com/bitm-proxy/go/internal/authproxy"
+	"github.com/bitm-proxy/go/internal/flowclient"
+	"github.com/bitm-proxy/go/internal/pyclient"
+	"github.com/bitm-proxy/go/internal/revproxy"
+	"github.com/bitm-proxy/go/internal/testproxy"
 )
 
 func envOr(key, def string) string {
@@ -95,7 +95,7 @@ func main() {
 		logArgs = append(logArgs, "auth_proxy", authSrv.Addr)
 	} else {
 		logArgs = append(logArgs,
-			"auth_proxy", "disabled (DISABLE_GO_AUTHPROXY) — start Python auth_proxy from dashboard for full MITM")
+			"auth_proxy", "disabled (DISABLE_GO_AUTHPROXY) — start Python auth_proxy from dashboard for full BITM")
 	}
 	log.Info("starting Go proxy services", logArgs...)
 

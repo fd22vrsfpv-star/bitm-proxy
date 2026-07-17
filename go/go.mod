@@ -1,3 +1,3 @@
-module github.com/mitm-proxy/go
+module github.com/bitm-proxy/go
 
 go 1.22

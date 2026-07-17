@@ -95,7 +95,7 @@ applies automatically.
 ## Logging categories are stable
 
 `auth_proxy`, `browser`, `devices`, `flow`, `keepalive`, `site_rules`,
-`devtools`, etc. The dashboard filters and `journalctl -u mitm-proxy -g`
+`devtools`, etc. The dashboard filters and `journalctl -u bitm-proxy -g`
 greps depend on these. Pick an existing category for new log entries
 unless you're adding a real new subsystem; if so, document it in
 docs/SESSIONS.md.

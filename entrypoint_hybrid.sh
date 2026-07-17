@@ -35,8 +35,8 @@ for i in {1..30}; do
     sleep 1
 done
 
-echo "[entrypoint-hybrid] Starting Go proxy daemon (reverse :8085, test :3129; Python owns :3128 auth MITM)..."
-/app/mitm-proxies &
+echo "[entrypoint-hybrid] Starting Go proxy daemon (reverse :8085, test :3129; Python owns :3128 auth BITM)..."
+/app/bitm-proxies &
 GO_PID=$!
 
 # Forward SIGTERM/SIGINT to both

@@ -221,7 +221,7 @@ async def attempt_registration(
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json; charset=utf-8",
-        "ocp-adrs-client-name": "MITM-Proxy-Replay",
+        "ocp-adrs-client-name": "BITM-Proxy-Replay",
         "ocp-adrs-client-version": "1.0",
     }
     append_log("info", "drs_register",

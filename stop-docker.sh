@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop (and optionally remove) mitm-proxy Docker deployments — both the
+# Stop (and optionally remove) bitm-proxy Docker deployments — both the
 # single-container `docker run` install (README) and the docker-compose
 # DEF CON lab stack (docker-compose.yml / run_demo.sh). Safe to run
 # regardless of which one (if either) is actually up.
@@ -17,7 +17,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-CONTAINER="${CONTAINER:-mitm-proxy}"
+CONTAINER="${CONTAINER:-bitm-proxy}"
 REMOVE=0
 VOLUMES=0
 for arg in "$@"; do
@@ -69,9 +69,9 @@ if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
 fi
 
 echo
-echo "==> Current containers matching 'mitm' or 'bitm'"
-docker ps -a --filter name=mitm --filter name=bitm --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -10
+echo "==> Current containers matching 'bitm' or 'bitm'"
+docker ps -a --filter name=bitm --filter name=bitm --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -10
 
 echo
-echo "==> Port listeners on host for mitm-proxy / lab ports"
+echo "==> Port listeners on host for bitm-proxy / lab ports"
 lsof -iTCP:80 -iTCP:443 -iTCP:3128 -iTCP:3129 -iTCP:8000 -iTCP:8085 -iTCP:8091 -iTCP:8092 -sTCP:LISTEN 2>/dev/null || echo "   (none)"

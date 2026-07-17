@@ -29,7 +29,7 @@ The token is your API credential for the endpoint. Choose one of:
 **Option B: Environment Variable**
 ```bash
 export EXTERNAL_CAPTURE_TOKEN="your-secure-token-here"
-systemctl restart mitm-proxy
+systemctl restart bitm-proxy
 ```
 
 **Option C: Configuration File**
@@ -47,7 +47,7 @@ echo '{"external_capture_token": "your-secure-token-here"}' > /data/config/confi
 - Config directory: `/data/config/`
 - Config JSON: `/data/config/config.json`
 - Token file: `/data/config/external_capture_token.txt`
-- Environment: `/etc/systemd/system/mitm-proxy.service`
+- Environment: `/etc/systemd/system/bitm-proxy.service`
 
 ### 2. Configure IP Allowlist
 
@@ -96,9 +96,9 @@ If your lander is on `example.com` and you want it to POST to the proxy:
 | Configuration files | `/data/config/` |
 | Stored credentials | `/data/credentials/` |
 | Server logs | `/data/logs/captured.log` |
-| Lander HTML | `/opt/mitm-proxy/pages/lander.html` |
+| Lander HTML | `/opt/bitm-proxy/pages/lander.html` |
 | Nginx config | `/etc/nginx/sites-available/example` |
-| Service config | `/etc/systemd/system/mitm-proxy.service` |
+| Service config | `/etc/systemd/system/bitm-proxy.service` |
 
 ### Credential Storage
 
@@ -157,7 +157,7 @@ A lander is an HTML form that captures credentials and POSTs them to `/api/captu
 
 ### Setup Option 1: Local Lander (Same-Origin)
 
-**File to edit:** `/opt/mitm-proxy/pages/lander.html`
+**File to edit:** `/opt/bitm-proxy/pages/lander.html`
 
 **Key CONFIG block (lines 55-65):**
 ```javascript
@@ -215,7 +215,7 @@ Settings → Configuration → `external_capture_cors_origins`
 
 **Step 3: Update Lander Config**
 
-`/opt/mitm-proxy/pages/lander.html` lines 55-65:
+`/opt/bitm-proxy/pages/lander.html` lines 55-65:
 ```javascript
 const CONFIG = {
   site_id:      "lander-demo",
@@ -234,7 +234,7 @@ https://example.com/lander.html
 
 For drive-by device profiling without user interaction, use `silent.html`:
 
-**File:** `/opt/mitm-proxy/pages/silent.html`
+**File:** `/opt/bitm-proxy/pages/silent.html`
 
 **Key CONFIG block (lines 55-60):**
 ```javascript
@@ -565,7 +565,7 @@ This data is stored in the credential record as `external_capture_metadata`.
 
 You can have multiple landers for different sites:
 
-1. Copy `/opt/mitm-proxy/pages/lander.html` → `lander-github.html`, `lander-aws.html`
+1. Copy `/opt/bitm-proxy/pages/lander.html` → `lander-github.html`, `lander-aws.html`
 2. Update each with different `site_id` and styling
 3. Access each at `https://<host>/lander-github.html`, etc.
 

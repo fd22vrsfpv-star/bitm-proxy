@@ -1,4 +1,4 @@
-"""Multi-tenant reverse proxy — transparent MITM of arbitrary login sites.
+"""Multi-tenant reverse proxy — transparent BITM of arbitrary login sites.
 
 Authorized pentest / red-team use only.
 
@@ -35,7 +35,7 @@ from fastapi.responses import HTMLResponse
 from backend.shared import append_flow, update_flow, append_log
 
 
-app = FastAPI(title="MITM Reverse Proxy", version="1.0.0")
+app = FastAPI(title="BITM Reverse Proxy", version="1.0.0")
 
 
 _STRIP_HEADERS = {
@@ -61,7 +61,7 @@ _HOP_BY_HOP = {
 
 _LANDING_HTML = """<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>MITM Reverse Proxy</title>
+<head><meta charset="utf-8"><title>BITM Reverse Proxy</title>
 <style>
 body{font-family:system-ui,-apple-system,sans-serif;background:#0a0a1a;color:#e2e8f0;margin:0;padding:40px;max-width:720px}
 h1{color:#7dd3fc;margin-bottom:8px}
@@ -83,7 +83,7 @@ button:hover{background:#264a72}
 .active a:hover{text-decoration:underline}
 </style></head>
 <body>
-<h1>MITM Reverse Proxy</h1>
+<h1>BITM Reverse Proxy</h1>
 <div class="sub">Multi-tenant transparent proxy. Every req/resp pair is captured to the Flow Trace tab on the debug dashboard (:8092) under session <code>revproxy_&lt;hostname&gt;</code>.</div>
 
 <form onsubmit="event.preventDefault();go()">

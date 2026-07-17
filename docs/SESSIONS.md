@@ -236,9 +236,9 @@ flow-update fanout. Not a "session" in the Playwright sense.
 | Backpressure | Drop-oldest when a client's queue fills (metric: `bus_metrics.dropped`) |
 | First-paint history | `ws_history_lines` (default 500) lines replayed on connect |
 
-### 8. Auth-proxy MITM session
+### 8. Auth-proxy BITM session
 
-A TLS tunnel held by the Python MITM proxy on `:3128`. Used for
+A TLS tunnel held by the Python BITM proxy on `:3128`. Used for
 browsers configured to proxy through us — we forge a per-host
 certificate, intercept, and route through either a Playwright session
 (if `proxy_via_playwright`) or direct.
@@ -268,7 +268,7 @@ owns which session.
 ### 10. Device profile
 
 A reusable, named bundle that fresh Playwright sessions can be launched
-against. Where the auth-proxy MITM session (#8) holds *what's currently
+against. Where the auth-proxy BITM session (#8) holds *what's currently
 flowing through `:3128`*, a device profile is the snapshotted, persisted
 form — re-applicable to any session for any target.
 
@@ -295,7 +295,7 @@ Selectable per-registration in the dashboard's **Devices** tab → *Register fro
   entry. The next GET that flows through `:3128` to that host gets a
   **synthetic 200 OK** page from the proxy that runs JS to read
   timezone / screen / etc, POSTs the result to a sentinel path on the
-  same host (`/__mitm_probe_callback?token=…&device_id=…&host=…`,
+  same host (`/__bitm_probe_callback?token=…&device_id=…&host=…`,
   consumed in-proxy — never touches upstream), then meta-refreshes to
   the original URL. Single-fire; the entry clears on consume.
 - **Probe + cred snapshot** — same as Active probe, plus the probe
@@ -387,10 +387,10 @@ profile (Devices tab → *Edit*) takes effect on the next Launch.
 | Module | `backend/devices.py` (logic), `backend/routes/devices.py` (REST), `backend/routes/browser.py` (launch hooks), `backend/auth_proxy.py:_build_probe_response`/`_handle_probe_callback` (active probe) |
 | Storage | `JsonStore("devices")` → `$DATA_DIR/devices/<id>.{json,enc}`. Encrypted at rest when `CREDENTIAL_PASSPHRASE` is set. |
 | Pending-probe registry | In-memory `_pending_probes: dict[host, {token, device_id, modes, sites, expires}]`; 30-minute TTL. |
-| Sentinel callback path | `/__mitm_probe_callback` — intercepted in both the plain-HTTP and HTTPS-MITM dispatch paths; consumed in-proxy, returns 204; never reaches upstream. |
+| Sentinel callback path | `/__bitm_probe_callback` — intercepted in both the plain-HTTP and HTTPS-BITM dispatch paths; consumed in-proxy, returns 204; never reaches upstream. |
 | WebSocket cmds | `list_devices`, `get_device`, `register_device_from_capture`, `register_device_from_session`, `register_device_manual`, `update_device`, `delete_device`, `launch_with_device`. |
 | REST routes | `GET/POST /api/devices`, `GET /api/devices/presets`, `GET/PATCH/DELETE /api/devices/{id}`, `POST /api/devices/from-capture`, `POST /api/devices/from-session`, `POST /api/devices/probe-callback`. |
-| Logging | All device events land on the `devices` log category with `DEVICE_*` verbs: `DEVICE_REGISTER_MANUAL`, `DEVICE_REGISTER_FROM_CAPTURE`, `DEVICE_REGISTER_FROM_SESSION`, `DEVICE_PROBE_PENDING`, `DEVICE_PROBE_PAGE_SERVED`, `DEVICE_PROBE_APPLIED`, `DEVICE_PROBE_REJECT`, `DEVICE_PROBE_ERROR`, `DEVICE_APPLY_CONTEXT`, `DEVICE_APPLY_POST_LAUNCH`, `DEVICE_LAUNCH_REQUEST`, `DEVICE_UPDATE`, `DEVICE_DELETE`. The dashboard's All-Logs filter and `journalctl -u mitm-proxy -g DEVICE_` both isolate them. Apply-context and apply-post-launch entries also bind to the affected `session_id` so per-session log files surface them. |
+| Logging | All device events land on the `devices` log category with `DEVICE_*` verbs: `DEVICE_REGISTER_MANUAL`, `DEVICE_REGISTER_FROM_CAPTURE`, `DEVICE_REGISTER_FROM_SESSION`, `DEVICE_PROBE_PENDING`, `DEVICE_PROBE_PAGE_SERVED`, `DEVICE_PROBE_APPLIED`, `DEVICE_PROBE_REJECT`, `DEVICE_PROBE_ERROR`, `DEVICE_APPLY_CONTEXT`, `DEVICE_APPLY_POST_LAUNCH`, `DEVICE_LAUNCH_REQUEST`, `DEVICE_UPDATE`, `DEVICE_DELETE`. The dashboard's All-Logs filter and `journalctl -u bitm-proxy -g DEVICE_` both isolate them. Apply-context and apply-post-launch entries also bind to the affected `session_id` so per-session log files surface them. |
 | Related config | `device_probe_enabled` (default `true`) — gates the synthetic-probe interception in `auth_proxy.py`. |
 | UI | Dashboard `:8092` → **Devices** tab. Per-row badges show source / engine / probed / creds×N / mobile. |
 
@@ -486,7 +486,7 @@ a faint left rule.
 `POST /api/capture/external` accepts a JSON credential bundle from
 pentester-side tooling (Burp extension, separate runner) and writes it
 into the same `credentials` JsonStore + Slack capture channel that the
-in-band MITM auth-proxy uses. Implementation in `backend/routes/capture.py`.
+in-band BITM auth-proxy uses. Implementation in `backend/routes/capture.py`.
 
 Body (only `site_id` is required):
 `site_id`, `user`, `source_url`, `username`, `password`, `tokens`
@@ -614,8 +614,8 @@ devices in the post-event wipe (`docs/DEFCON-LAB-SETUP.md`).
 
 | Key | Default | Purpose |
 |---|---|---|
-| `autostart_auth_proxy` | `true` | Auto-start the Python MITM on service boot. |
-| `autostart_auth_proxy_port` | `3128` | Bind port for the auth MITM. |
+| `autostart_auth_proxy` | `true` | Auto-start the Python BITM on service boot. |
+| `autostart_auth_proxy_port` | `3128` | Bind port for the auth BITM. |
 | `proxy_via_playwright` | `false` | When a proxied request matches a live Playwright session, route it through that session's context instead of direct. |
 | `auto_login_wait_seconds` | `10` | Proxy wait timeout for an auto-launched Playwright to become ready. |
 
@@ -787,7 +787,7 @@ These live in the service environment (set by `install-ubuntu.sh` or
 | `DEBUG_PORT` | `8092` | Debug-dashboard port override. |
 | `RAG_PORT` | `8000` | RAG API port override. |
 | `RP_PORT` | `8085` | Reverse-proxy port override. |
-| `DATA_DIR` | `/var/lib/mitm-proxy` (installer) / platform-specific otherwise | Captures, credentials, screenshots, api_key_plaintext. |
+| `DATA_DIR` | `/var/lib/bitm-proxy` (installer) / platform-specific otherwise | Captures, credentials, screenshots, api_key_plaintext. |
 | `SCREENSHOTS_DIR` | `$DATA_DIR/screenshots` | Per-session screenshot output. |
 | `CERTS_DIR` | `$APP_DIR/certs` | Forged-CA store + user-supplied custom CA bundles. |
 | `PLAYWRIGHT_BROWSERS_PATH` | `$APP_DIR/.playwright-browsers` (installer) | Where Chromium/Edge binaries live. |
@@ -795,7 +795,7 @@ These live in the service environment (set by `install-ubuntu.sh` or
 | `INTERNAL_SECRET` | *(random at install)* | Shared secret between control-plane processes. |
 | `CREDENTIAL_PASSPHRASE` | unset | If set, `credentials_store` + `cookies_store` are AES-256-GCM-encrypted. |
 | `DISABLE_PYTHON_REVPROXY` | unset | `1` to skip binding the Python reverse proxy (Go daemon owns `:8085`). |
-| `DISABLE_GO_AUTHPROXY` | unset | `1` to skip the Go MITM; Python `:3128` keeps auth MITM duties. |
+| `DISABLE_GO_AUTHPROXY` | unset | `1` to skip the Go BITM; Python `:3128` keeps auth BITM duties. |
 | `SLOW_CALLBACK_MS` | `100` | Threshold for the event-loop slow-callback watchdog. |
 | `PYTHONUNBUFFERED` | `1` in the systemd unit | Flush stdout/stderr immediately so journald sees live output. |
 

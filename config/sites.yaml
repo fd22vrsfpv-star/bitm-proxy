@@ -131,7 +131,7 @@ globals:
     - r.manage.microsoft.com
     - "*.r.manage.microsoft.com"
 
-  # Hostname allowlist for the :3128 auth proxy's MITM interception.
+  # Hostname allowlist for the :3128 auth proxy's BITM interception.
   # Empty (the default) = unrestricted, i.e. today's behavior for every
   # existing install — this proxy intercepts/decrypts any HTTPS host it
   # sees, same as before. Non-empty is opt-in hardening for a deployment

@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="MITM Proxy Debug", version="1.27.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.27.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1697,7 +1697,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MITM Proxy — Debug</title>
+<title>BITM Proxy — Debug</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a1a;color:#e2e8f0;font-family:'SF Mono','Consolas',monospace;font-size:14px}
@@ -1971,8 +1971,8 @@ body{background:#0a0a1a;color:#e2e8f0;font-family:'SF Mono','Consolas',monospace
   <span id="ws-badge" class="badge badge-dead">connecting</span>
   <span style="flex:1"></span>
   <div class="header-launch">
-    <button class="btn" onclick="launchMitmProxy()">Launch</button>
-    <button class="btn" style="border-color:#a855f7;background:#3b1f6e;color:#c4b5fd" onclick="launchMitmProxy(true)">Private</button>
+    <button class="btn" onclick="launchBitmProxy()">Launch</button>
+    <button class="btn" style="border-color:#a855f7;background:#3b1f6e;color:#c4b5fd" onclick="launchBitmProxy(true)">Private</button>
   </div>
   <div class="stats">
     <span class="stat">Tok:<b id="st-tok">0</b></span>
@@ -2153,7 +2153,7 @@ body{background:#0a0a1a;color:#e2e8f0;font-family:'SF Mono','Consolas',monospace
             <details style="margin:8px 0;border:1px solid #1e293b;border-radius:4px;padding:8px 12px;background:#0a0a14">
               <summary style="color:#94a3b8;font-size:13px;cursor:pointer;font-weight:600">Custom CA cert (replace the auto-generated one)</summary>
               <div style="padding:10px 0">
-                <p style="color:#94a3b8;font-size:12px;margin:0 0 8px 0">Upload your own CA cert + private key (PEM format) to replace the auto-generated MITM CA. Useful when you have an org-installed root that subjects already trust, or when you want a CA chain you control. Validates that the key matches the cert and that <code>BasicConstraints CA:TRUE</code> is set.</p>
+                <p style="color:#94a3b8;font-size:12px;margin:0 0 8px 0">Upload your own CA cert + private key (PEM format) to replace the auto-generated BITM CA. Useful when you have an org-installed root that subjects already trust, or when you want a CA chain you control. Validates that the key matches the cert and that <code>BasicConstraints CA:TRUE</code> is set.</p>
                 <div id="ca-current" style="margin-bottom:10px;font-size:12px"></div>
                 <div style="display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center;font-size:13px">
                   <label style="color:#94a3b8">CA cert (.crt / .pem)</label>
@@ -2192,7 +2192,7 @@ requests.get("https://example.com",
     verify=False)
                 </pre>
                 <div style="color:#7dd3fc;font-weight:600;margin-bottom:4px">3. For HTTPS injection: install the CA cert</div>
-                <div>The proxy generates a CA cert for MITM. Install it as a trusted root:</div>
+                <div>The proxy generates a CA cert for BITM. Install it as a trusted root:</div>
                 <pre style="background:#0a0a14;padding:6px;border-radius:4px;color:#cbd5e1;margin:4px 0" id="auth-proxy-ca-path">Start the proxy to see the CA cert path</pre>
                 <div style="color:#f87171;margin-top:4px">Without the CA cert, HTTPS sites will show certificate warnings. Use <code>verify=False</code> or <code>-k</code> to bypass.</div>
               </div>
@@ -2239,7 +2239,7 @@ requests.get("https://example.com",
         </div>
         <div class="settings-pane" data-pane="diagnostics" style="display:none">
           <h2>Diagnostics</h2>
-          <p style="color:#94a3b8;font-size:13px;margin-bottom:10px">Runs read-only checks across the container to show what's actually happening. Use this when a proxy isn't showing logs, a tab looks empty, or something's "bypassing" the MITM. Re-run anytime.</p>
+          <p style="color:#94a3b8;font-size:13px;margin-bottom:10px">Runs read-only checks across the container to show what's actually happening. Use this when a proxy isn't showing logs, a tab looks empty, or something's "bypassing" the BITM. Re-run anytime.</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
             <button class="btn" onclick="runDiagnostics()">Run checks</button>
             <span id="diag-summary" style="font-size:13px;color:#78859b"></span>
@@ -2256,7 +2256,7 @@ requests.get("https://example.com",
   </div>
 
   <div class="data-panel" id="panel-docs" style="display:none;overflow-y:auto;padding:20px 32px;max-width:900px">
-    <h1 style="color:#7dd3fc;margin-bottom:16px">MITM Proxy — Docs</h1>
+    <h1 style="color:#7dd3fc;margin-bottom:16px">BITM Proxy — Docs</h1>
     <div id="docs-content"></div>
   </div>
 
@@ -3686,7 +3686,7 @@ const IDX_DEFAULT_IGNORE=new Set([
   'priority',
 ]);
 
-const IDX_CUSTOM_STORAGE_KEY='mitm.idx.customIgnore';
+const IDX_CUSTOM_STORAGE_KEY='bitm.idx.customIgnore';
 function _idxLoadCustomIgnore(){
   try{const v=JSON.parse(localStorage.getItem(IDX_CUSTOM_STORAGE_KEY)||'[]');return new Set(v.map(s=>String(s).toLowerCase()))}
   catch(_){return new Set()}
@@ -5017,7 +5017,7 @@ function renderDocs(){
     <tr><td><code>8091</code></td><td>Main app — browser session UI</td><td><a href="http://${host}:8091/" target="_blank" style="color:#7dd3fc">http://${host}:8091/</a></td></tr>
     <tr><td><code>8092</code></td><td>Debug dashboard (you are here)</td><td>—</td></tr>
     <tr><td><code>8000</code></td><td>RAG API (Burp extension target)</td><td><a href="http://${host}:8000/health" target="_blank" style="color:#7dd3fc">http://${host}:8000/health</a></td></tr>
-    <tr><td><code>8085</code></td><td>Reverse proxy (transparent MITM, Evilginx-style)</td><td><a href="http://${host}:8085/" target="_blank" style="color:#7dd3fc">http://${host}:8085/</a></td></tr>
+    <tr><td><code>8085</code></td><td>Reverse proxy (transparent BITM, Evilginx-style)</td><td><a href="http://${host}:8085/" target="_blank" style="color:#7dd3fc">http://${host}:8085/</a></td></tr>
     <tr><td><code>3100-3199</code></td><td>Published range for auth proxy (default <b>3128</b>) — any port in this range is reachable on your host. <b>Click Start on the Proxy tab</b> to enable.</td><td>—</td></tr>
     <tr><td><code>3129</code></td><td>Built-in test proxy (default — any of 3100-3199 works)</td><td>—</td></tr>
   </table>
@@ -5031,7 +5031,7 @@ function renderDocs(){
     <li><b>Devices</b> — reusable device profiles (fingerprint + optional probed JS signals + optional creds). See <i>Device fingerprinting &amp; profiles</i> below.</li>
     <li><b>Keep-Alive</b> — token-validity monitoring log.</li>
     <li><b>Proxy</b> — start/stop the auth proxy and test proxy, configure upstream.</li>
-    <li><b>Proxy Traffic</b> — live traffic flowing through the auth proxy (<code>INJECT</code>, <code>MITM_INJECT</code>, <code>TUNNEL</code>, etc.).</li>
+    <li><b>Proxy Traffic</b> — live traffic flowing through the auth proxy (<code>INJECT</code>, <code>BITM_INJECT</code>, <code>TUNNEL</code>, etc.).</li>
     <li><b>Flow Trace</b> — timeline of every HTTP exchange in a browser session, with taint highlighting and auth-milestone banner pills (LOGIN → AUTH CODE → TOKENS → SESSION → PRT). See <i>Auth-flow milestones</i> below.</li>
     <li><b>Index</b> — aggregated cross-row index of headers, cookies, bearer tokens, and <b>Decoded JWTs</b> (claims surfaced inline — no signature verification). Click an item to highlight it across the Flow Trace.</li>
   </ul>
@@ -5075,10 +5075,10 @@ function renderDocs(){
     <li><b>YAML status:</b> green (<code>YAML loaded (N idp_hosts, M session cookies)</code>) or red (<code>YAML problem — idp_hosts=0, login_re=NO, token_re=NO</code>).</li>
     <li>Expandable <b>untagged token-path rows</b> dump up to 3 samples with their request/response body previews so you can read why on the spot.</li>
   </ul>
-  <p>Same line is also <code>print()</code>'d to stdout with a <code>[FLOW]</code> prefix — visible via <code>journalctl -u mitm-proxy -f</code>, <code>docker logs -f</code>, or the <code>run-local.sh</code> console.</p>
+  <p>Same line is also <code>print()</code>'d to stdout with a <code>[FLOW]</code> prefix — visible via <code>journalctl -u bitm-proxy -f</code>, <code>docker logs -f</code>, or the <code>run-local.sh</code> console.</p>
 
   <h2>Device fingerprinting &amp; profiles</h2>
-  <p>The MITM proxy on <code>:3128</code> passively captures the connecting browser's device fingerprint on every request — User-Agent, the full Sec-CH-UA-* client-hint set (<code>sec-ch-ua</code>, <code>sec-ch-ua-mobile</code>, <code>sec-ch-ua-platform</code>, <code>-platform-version</code>, <code>-arch</code>, <code>-bitness</code>, <code>-model</code>, <code>-full-version-list</code>, etc.), and Accept-Language. It's stored per-host under <code>_captured_sessions[hostname]['fingerprint']</code> in <code>backend/auth_proxy.py</code> and surfaces in the <b>Captures</b> dropdown with a family tag (<code>chromium-msedge</code>, <code>webkit</code>, <code>firefox</code>) and a hint count.</p>
+  <p>The BITM proxy on <code>:3128</code> passively captures the connecting browser's device fingerprint on every request — User-Agent, the full Sec-CH-UA-* client-hint set (<code>sec-ch-ua</code>, <code>sec-ch-ua-mobile</code>, <code>sec-ch-ua-platform</code>, <code>-platform-version</code>, <code>-arch</code>, <code>-bitness</code>, <code>-model</code>, <code>-full-version-list</code>, etc.), and Accept-Language. It's stored per-host under <code>_captured_sessions[hostname]['fingerprint']</code> in <code>backend/auth_proxy.py</code> and surfaces in the <b>Captures</b> dropdown with a family tag (<code>chromium-msedge</code>, <code>webkit</code>, <code>firefox</code>) and a hint count.</p>
 
   <h3>Two ways to use the fingerprint</h3>
   <table>
@@ -5107,7 +5107,7 @@ function renderDocs(){
     <li><b>Register from capture…</b> (Devices tab toolbar) — pick a host you've already browsed through <code>:3128</code>. Modes:
       <ul>
         <li><b>Passive</b> — snapshot of <code>_captured_sessions[host]</code> right now. No prompt to the subject.</li>
-        <li><b>Active JS probe</b> — also stamps a one-shot <code>_pending_probes[host]</code> entry. The next GET that flows through <code>:3128</code> to that host gets a <b>synthetic 200 OK</b> from the proxy that runs JS to read tz/screen/viewport/languages/platform, POSTs the result to a sentinel path on the same host (<code>/__mitm_probe_callback</code> — consumed in-proxy, never reaches upstream), and meta-refreshes to the original URL. Single-fire, 30-min TTL.</li>
+        <li><b>Active JS probe</b> — also stamps a one-shot <code>_pending_probes[host]</code> entry. The next GET that flows through <code>:3128</code> to that host gets a <b>synthetic 200 OK</b> from the proxy that runs JS to read tz/screen/viewport/languages/platform, POSTs the result to a sentinel path on the same host (<code>/__bitm_probe_callback</code> — consumed in-proxy, never reaches upstream), and meta-refreshes to the original URL. Single-fire, 30-min TTL.</li>
         <li><b>Probe + cred snapshot</b> — same as Active probe, plus the probe page also serializes <code>localStorage</code> / <code>sessionStorage</code> into the POST body.</li>
       </ul>
     </li>
@@ -5130,7 +5130,7 @@ function renderDocs(){
 DEVICE_PROBE_PENDING / DEVICE_PROBE_PAGE_SERVED / DEVICE_PROBE_APPLIED / DEVICE_PROBE_REJECT
 DEVICE_APPLY_CONTEXT / DEVICE_APPLY_POST_LAUNCH / DEVICE_LAUNCH_REQUEST
 DEVICE_UPDATE / DEVICE_DELETE</pre>
-  <p>Filter All Logs to Service <code>devices</code> in the dropdown, or grep <code>journalctl -u mitm-proxy -g "DEVICE_"</code>. Apply-context and apply-post-launch entries also bind <code>session_id</code> so per-session log files surface them.</p>
+  <p>Filter All Logs to Service <code>devices</code> in the dropdown, or grep <code>journalctl -u bitm-proxy -g "DEVICE_"</code>. Apply-context and apply-post-launch entries also bind <code>session_id</code> so per-session log files surface them.</p>
 
   <h3>WS commands &amp; REST</h3>
   <p>WS (over <code>/ws/control</code>): <code>list_devices</code>, <code>get_device</code>, <code>register_device_from_capture</code>, <code>register_device_from_session</code>, <code>register_device_manual</code>, <code>update_device</code>, <code>delete_device</code>, <code>launch_with_device</code>.</p>
@@ -5143,7 +5143,7 @@ DEVICE_UPDATE / DEVICE_DELETE</pre>
     <li>Open the <b>RAG Scan Bridge</b> tab in Burp.</li>
     <li>Set <b>RAG API URL</b> to <code>http://${host}:8000</code> (default <code>https://localhost:8000</code> won't work — no TLS here).</li>
     <li>Set <b>API Key</b> to anything non-empty (no auth enforced on the RAG API).</li>
-    <li>Click <b>Test Connection</b>. You should see "Connected — mitm-proxy".</li>
+    <li>Click <b>Test Connection</b>. You should see "Connected — bitm-proxy".</li>
     <li>Click <b>Import Filtered Findings</b> (or <b>Import All</b>) to pull flows as Burp scan issues.</li>
   </ol>
   <p>You can also push to an <i>external</i> RAG Scan Stack from the Flow Trace tab: click <b>Send to RAG</b>. That uses <code>rag_api_url</code> from the Configuration panel.</p>
@@ -5173,7 +5173,7 @@ DEVICE_UPDATE / DEVICE_DELETE</pre>
   <p>Meaning of each flag:</p>
   <table>
     <tr><th>Flag</th><th>Direction</th><th>Purpose</th></tr>
-    <tr><td><code>-L 3128:localhost:3128</code></td><td>remote → laptop</td><td>Python MITM auth proxy reachable at <code>localhost:3128</code> on your laptop</td></tr>
+    <tr><td><code>-L 3128:localhost:3128</code></td><td>remote → laptop</td><td>Python BITM auth proxy reachable at <code>localhost:3128</code> on your laptop</td></tr>
     <tr><td><code>-L 3129:localhost:3129</code></td><td>remote → laptop</td><td>Go test proxy</td></tr>
     <tr><td><code>-L 8091:localhost:8091</code></td><td>remote → laptop</td><td>Remote-browser UI</td></tr>
     <tr><td><code>-L 8092:localhost:8092</code></td><td>remote → laptop</td><td>This debug dashboard</td></tr>
@@ -5199,7 +5199,7 @@ curl -sI http://127.0.0.1:8080/</pre>
     <tr><td><code>rag_engagement_id</code></td><td>Optional engagement UUID to attach findings to.</td></tr>
   </table>
 
-  <h2>Reverse Proxy (transparent MITM)</h2>
+  <h2>Reverse Proxy (transparent BITM)</h2>
   <p><b>Authorized pentest / red-team use only.</b> Port <code>8085</code> runs a multi-tenant reverse proxy that transparently forwards to arbitrary target sites. Every req/resp is captured to the Flow Trace tab under a synthetic session <code>revproxy_&lt;hostname&gt;</code>.</p>
   <ol>
     <li>Open <a href="http://${host}:8085/" target="_blank" style="color:#7dd3fc">http://${host}:8085/</a>.</li>
@@ -5213,10 +5213,10 @@ curl -sI http://127.0.0.1:8080/</pre>
   <p>Start from the <b>Proxy</b> tab. Default port <code>3128</code>. Configure your tool (or browser) to use it:</p>
   <pre>curl -k -x http://${host}:3128 https://example.com</pre>
   <p>For HTTPS injection to work, trust the generated CA cert from <code>/data/proxy_ca/ca.crt</code>:</p>
-  <pre>docker exec mitm-proxy cat /data/proxy_ca/ca.crt</pre>
+  <pre>docker exec bitm-proxy cat /data/proxy_ca/ca.crt</pre>
 
   <h2>External credential ingest — POST /api/capture/external</h2>
-  <p><b>Authorized pentest use only.</b> Pentester-side tooling (Burp extension, a separate runner, anything that obtains credentials outside the <code>:3128</code> MITM path) can push them into the same credentials store + Slack capture channel as in-band auto-captures.</p>
+  <p><b>Authorized pentest use only.</b> Pentester-side tooling (Burp extension, a separate runner, anything that obtains credentials outside the <code>:3128</code> BITM path) can push them into the same credentials store + Slack capture channel as in-band auto-captures.</p>
   <p><b>→ For complete setup guide, file locations, lander deployment, log formats, and troubleshooting, see <code>docs/EXTERNAL_CAPTURE_SETUP.md</code> in the repo.</b></p>
   <p>Quick setup (in <b>Settings &rarr; Configuration &rarr; External capture</b>):</p>
   <ul>
@@ -5264,7 +5264,7 @@ curl -sI http://127.0.0.1:8080/</pre>
 
   <div id="docs-pane-attacks" style="display:none">
 
-  <p style="color:#94a3b8">Step-by-step playbook for every attack/demo this tool can drive. Run these only against a tenant you're authorized to test — the lab deployment scopes the MITM proxy and Phantom Join to an allowlisted tenant via <code>proxy_allowed_hosts</code> / <code>phantom_join_allowed_domains</code> (see <code>docs/PROXY_DEEP_DIVE.md</code>, <code>tools/README_Phantom.md</code>); a self-hosted instance has no such restriction unless you configure one.</p>
+  <p style="color:#94a3b8">Step-by-step playbook for every attack/demo this tool can drive. Run these only against a tenant you're authorized to test — the lab deployment scopes the BITM proxy and Phantom Join to an allowlisted tenant via <code>proxy_allowed_hosts</code> / <code>phantom_join_allowed_domains</code> (see <code>docs/PROXY_DEEP_DIVE.md</code>, <code>tools/README_Phantom.md</code>); a self-hosted instance has no such restriction unless you configure one.</p>
 
   <div class="attack-card">
     <h3><a href="http://${host}:8091/" target="_blank" rel="noopener noreferrer">1. Push notification auto-click (Path A)</a><span class="portal-arrow">↗ session UI (:8091)</span></h3>
@@ -5341,11 +5341,11 @@ curl -sI http://127.0.0.1:8080/</pre>
 
   <div class="attack-card">
     <h3><a href="#" onclick="return docsGoTab('auth-proxy')">7. Credential injection via the auth proxy (:3128)</a><span class="portal-arrow">→ Proxy Traffic tab</span></h3>
-    <p class="attack-goal">Goal: replay a previously captured session's cookies/tokens transparently through the MITM proxy into new outbound requests — turning a one-time capture into ongoing access.</p>
+    <p class="attack-goal">Goal: replay a previously captured session's cookies/tokens transparently through the BITM proxy into new outbound requests — turning a one-time capture into ongoing access.</p>
     <ol>
       <li>Open the <b>Proxy</b> tab, click <b>Start Proxy</b>.</li>
       <li>Point a client at the published port (default <code>3128</code>, any of <code>3100-3199</code>) with the proxy's CA cert trusted.</li>
-      <li>Browse to a host with an existing capture in <b>Captured Data</b> — watch <b>Proxy Traffic</b> for <code>INJECT</code>/<code>MITM_INJECT</code> entries showing the stored cookies/headers being merged into the live request.</li>
+      <li>Browse to a host with an existing capture in <b>Captured Data</b> — watch <b>Proxy Traffic</b> for <code>INJECT</code>/<code>BITM_INJECT</code> entries showing the stored cookies/headers being merged into the live request.</li>
       <li>Confirm the site treats the request as already-authenticated (no login prompt) in the browser driving through the proxy.</li>
     </ol>
   </div>
@@ -6078,7 +6078,7 @@ function cfgSet(k,v){
 // Settings tab. After this change it's essentially a flush-everything.
 function saveConfig(){send({cmd:'update_config',data:configCache})}
 function clearAllSensitive(){if(!confirm('Delete ALL credentials, cookies, screenshots, and saved email?'))return;send({cmd:'clear_all_sensitive'})}
-function launchMitmProxy(priv){const _ak=new URLSearchParams(location.search).get('api_key')||'';const q=(priv?'auto=1&private=1':'auto=1')+(_ak?'&api_key='+_ak:'');const mainUrl=location.protocol+'//'+location.hostname+':8091';window.open(mainUrl+'/'+('?'+q),'_blank','popup,width=500,height=960')}
+function launchBitmProxy(priv){const _ak=new URLSearchParams(location.search).get('api_key')||'';const q=(priv?'auto=1&private=1':'auto=1')+(_ak?'&api_key='+_ak:'');const mainUrl=location.protocol+'//'+location.hostname+':8091';window.open(mainUrl+'/'+('?'+q),'_blank','popup,width=500,height=960')}
 
 // ── Generate capture link ──
 function _buildCaptureLink(target){
@@ -6435,7 +6435,7 @@ async function uploadCa(){
       ? data.warnings.map(w=>`<div style="color:#fef08a">⚠ ${esc(w)}</div>`).join('')
       : '';
     result.innerHTML=`<div style="color:#a7f3d0;background:#064e3b;border-left:3px solid #10b981;padding:6px 10px;border-radius:0 3px 3px 0">
-      <b>✓ CA replaced.</b> Subsequent connections will be MITM'd by the new pair. Existing host-leaf cert cache cleared.
+      <b>✓ CA replaced.</b> Subsequent connections will be BITM'd by the new pair. Existing host-leaf cert cache cleared.
       ${warn}
     </div>`;
     refreshCaInfo();
@@ -6448,7 +6448,7 @@ async function uploadCa(){
 function downloadCa(){
   const url='/api/browser/auth_proxy/ca/download'+(_apiKey?('?api_key='+encodeURIComponent(_apiKey)):'');
   const a=document.createElement('a');
-  a.href=url; a.download='mitm-proxy-ca.crt';
+  a.href=url; a.download='bitm-proxy-ca.crt';
   document.body.appendChild(a); a.click(); a.remove();
 }
 async function resetCa(){
@@ -6840,9 +6840,9 @@ function renderAuthProxy(){
   }
   if(authProxyStatus.ca_cert_path){
     caPath.textContent=authProxyStatus.ca_cert_path;
-    if(authProxyStatus.mitm_enabled){
+    if(authProxyStatus.bitm_enabled){
       caEl.style.display='';
-      caEl.innerHTML=`<span style="color:#4ade80">&#10003;</span> MITM enabled — HTTPS cookie/token injection active`;
+      caEl.innerHTML=`<span style="color:#4ade80">&#10003;</span> BITM enabled — HTTPS cookie/token injection active`;
     }else{
       caEl.style.display='';
       caEl.innerHTML=`<span style="color:#fbbf24">&#9888;</span> HTTP-only mode — install <code>cryptography</code> for HTTPS injection`;

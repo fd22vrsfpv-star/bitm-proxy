@@ -1,4 +1,4 @@
-"""MITM Proxy — FastAPI backend entry point.
+"""BITM Proxy — FastAPI backend entry point.
 
 Main app on port 8090, debug dashboard on port 8091.
 """
@@ -12,7 +12,7 @@ from backend.routes import browser, sessions, devices, capture
 from backend.shared import get_config
 from backend.auth import APIKeyMiddleware
 
-app = FastAPI(title="MITM Proxy", version="1.27.0")
+app = FastAPI(title="BITM Proxy", version="1.27.0")
 
 app.add_middleware(APIKeyMiddleware)
 

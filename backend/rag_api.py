@@ -25,7 +25,7 @@ from backend.shared import _session_flows, append_log
 from backend.rag_bridge import _build_finding, _flow_hostname
 
 
-app = FastAPI(title="MITM Proxy — RAG API", version="1.0.0")
+app = FastAPI(title="BITM Proxy — RAG API", version="1.0.0")
 
 
 # In-memory buffer for findings imported from external sources (e.g. Burp export)
@@ -75,7 +75,7 @@ async def health():
     return {
         "ok": True,
         "status": "ok",
-        "service": "mitm-proxy",
+        "service": "bitm-proxy",
         "database": {"tables_found": 1, "flow_exchanges": n,
                      "active_sessions": len(_session_flows)},
     }
@@ -110,17 +110,17 @@ async def scope(name: str = ""):
 
 @app.get("/engagements")
 async def engagements():
-    # Single default engagement representing this mitm-proxy instance
+    # Single default engagement representing this bitm-proxy instance
     return {"engagements": [
-        {"id": "mitm-proxy", "name": "MITM Proxy sessions", "scope_name": ""},
+        {"id": "bitm-proxy", "name": "BITM Proxy sessions", "scope_name": ""},
     ]}
 
 
 @app.get("/engagements/{eng_id}")
 async def engagement_detail(eng_id: str):
-    if eng_id != "mitm-proxy":
+    if eng_id != "bitm-proxy":
         return {"error": "not found"}
-    return {"id": "mitm-proxy", "name": "MITM Proxy sessions", "scope_name": ""}
+    return {"id": "bitm-proxy", "name": "BITM Proxy sessions", "scope_name": ""}
 
 
 @app.get("/findings/search")

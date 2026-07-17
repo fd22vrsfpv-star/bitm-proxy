@@ -92,7 +92,7 @@ def _ensure_file_logger():
         return
     log_dir = _get_log_dir()
     log_path = log_dir / "captured.log"
-    _file_logger = logging.getLogger("mitm-proxy-capture")
+    _file_logger = logging.getLogger("bitm-proxy-capture")
     _file_logger.setLevel(logging.DEBUG)
     _file_logger.propagate = False
     _file_handler = logging.handlers.RotatingFileHandler(
@@ -148,7 +148,7 @@ def _get_session_logger(session_id: str) -> logging.Logger:
     if session_id in _session_loggers:
         return _session_loggers[session_id]
     log_path = _get_session_log_dir() / f"{session_id}.log"
-    logger = logging.getLogger(f"mitm-proxy-session-{session_id}")
+    logger = logging.getLogger(f"bitm-proxy-session-{session_id}")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
     handler = logging.FileHandler(str(log_path), encoding="utf-8")

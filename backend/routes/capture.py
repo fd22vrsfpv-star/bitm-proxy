@@ -1,7 +1,7 @@
 """External credential capture ingestion.
 
 POST /api/capture/external accepts credentials/tokens/cookies from
-pentester-side tooling that obtained them outside the MITM auth-proxy
+pentester-side tooling that obtained them outside the BITM auth-proxy
 path (e.g. a Burp extension, a separate runner, a manually-driven
 session). The payload is written into the same `credentials` JsonStore
 namespace and triggers the same Slack `capture` channel as in-band

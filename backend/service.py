@@ -1,4 +1,4 @@
-"""MITM Proxy - Windows Service wrapper.
+"""BITM Proxy - Windows Service wrapper.
 
 Install/run as a Windows service using pywin32, or run directly on Linux via systemd.
 
@@ -48,7 +48,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
-log = logging.getLogger("mitm-proxy")
+log = logging.getLogger("bitm-proxy")
 
 
 def run_server():
@@ -60,7 +60,7 @@ def run_server():
     # Change to app dir so relative paths (e.g. ../static) work
     os.chdir(_APP_DIR)
 
-    log.info(f"Starting MITM Proxy servers...")
+    log.info(f"Starting BITM Proxy servers...")
     log.info(f"  App dir:  {_APP_DIR}")
     log.info(f"  Data dir: {DATA_DIR}")
     log.info(f"  Python:   {sys.executable}")
@@ -85,11 +85,11 @@ if sys.platform == "win32":
         import win32event
         import servicemanager
 
-        class MitmProxyService(win32serviceutil.ServiceFramework):
-            _svc_name_ = "MitmProxy"
-            _svc_display_name_ = "MITM Proxy"
+        class BitmProxyService(win32serviceutil.ServiceFramework):
+            _svc_name_ = "BitmProxy"
+            _svc_display_name_ = "BITM Proxy"
             _svc_description_ = (
-                "MITM Proxy - Remote browser login and API testing. "
+                "BITM Proxy - Remote browser login and API testing. "
                 "Serves on ports 8091 (main) and 8092 (debug)."
             )
             # Tell pywin32 where to find this module
@@ -134,13 +134,13 @@ if sys.platform == "win32":
                 log.info("Service stopped")
 
     except ImportError:
-        MitmProxyService = None
+        BitmProxyService = None
 
 
 # ── CLI ──────────────────────────────────────────────────
 
 def print_usage():
-    print("MITM Proxy Service Manager")
+    print("BITM Proxy Service Manager")
     print()
     print("Usage: python -m backend.service <command>")
     print()
@@ -169,7 +169,7 @@ def print_usage():
 
 def windows_service_cmd(cmd):
     """Run pywin32 service commands."""
-    if MitmProxyService is None:
+    if BitmProxyService is None:
         print("ERROR: pywin32 is not installed.")
         print("Install it:  pip install pywin32")
         print("Then run:    python -m pywin32_postinstall -install")
@@ -178,14 +178,14 @@ def windows_service_cmd(cmd):
     if cmd == "install":
         # Use HandleCommandLine which does everything properly
         sys.argv = [sys.argv[0], "--startup", "auto", "install"]
-        win32serviceutil.HandleCommandLine(MitmProxyService)
+        win32serviceutil.HandleCommandLine(BitmProxyService)
         print()
         print(f"Data dir: {DATA_DIR}")
         print(f"Log file: {LOG_FILE}")
         print()
         print("Start with:  python -m backend.service start")
-        print("  or:        net start MitmProxy")
-        print("  or:        Start-Service MitmProxy")
+        print("  or:        net start BitmProxy")
+        print("  or:        Start-Service BitmProxy")
     elif cmd == "debug":
         # Run the service logic in console mode for troubleshooting
         print(f"Running in debug mode (foreground)...")
@@ -196,10 +196,10 @@ def windows_service_cmd(cmd):
         run_server()
     elif cmd in ("remove", "start", "stop", "restart", "update"):
         sys.argv = [sys.argv[0], cmd]
-        win32serviceutil.HandleCommandLine(MitmProxyService)
+        win32serviceutil.HandleCommandLine(BitmProxyService)
     elif cmd == "status":
         try:
-            status = win32serviceutil.QueryServiceStatus(MitmProxyService._svc_name_)
+            status = win32serviceutil.QueryServiceStatus(BitmProxyService._svc_name_)
             states = {
                 win32service.SERVICE_STOPPED: "STOPPED",
                 win32service.SERVICE_START_PENDING: "START_PENDING",
@@ -220,15 +220,15 @@ def windows_service_cmd(cmd):
 
 def linux_systemd_cmd(cmd):
     """Manage systemd service on Linux."""
-    unit_name = "mitm-proxy"
+    unit_name = "bitm-proxy"
     unit_path = f"/etc/systemd/system/{unit_name}.service"
 
     if cmd == "install":
         python_exe = sys.executable
-        data_dir = os.environ.get("DATA_DIR", "/opt/mitm-proxy-data")
+        data_dir = os.environ.get("DATA_DIR", "/opt/bitm-proxy-data")
 
         unit_content = f"""[Unit]
-Description=MITM Proxy - Remote browser login and API testing
+Description=BITM Proxy - Remote browser login and API testing
 After=network.target
 
 [Service]

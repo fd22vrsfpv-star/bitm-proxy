@@ -3,11 +3,11 @@
 :: Requires: Python 3.10+, Node.js 18+ already on PATH.
 :: Run from the repo root: windows\quick-start.bat
 
-title MITM Proxy - Quick Start
+title BITM Proxy - Quick Start
 cd /d "%~dp0.."
 
 echo.
-echo  MITM Proxy - Quick Start
+echo  BITM Proxy - Quick Start
 echo  ========================
 echo.
 
@@ -25,9 +25,9 @@ if errorlevel 1 (
 )
 
 :: ── Set up data directories ──
-set DATA_DIR=%LOCALAPPDATA%\MitmProxy\data
-set SCREENSHOTS_DIR=%LOCALAPPDATA%\MitmProxy\screenshots
-set CERTS_DIR=%LOCALAPPDATA%\MitmProxy\certs
+set DATA_DIR=%LOCALAPPDATA%\BitmProxy\data
+set SCREENSHOTS_DIR=%LOCALAPPDATA%\BitmProxy\screenshots
+set CERTS_DIR=%LOCALAPPDATA%\BitmProxy\certs
 set PYTHONUNBUFFERED=1
 if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
 if not exist "%SCREENSHOTS_DIR%" mkdir "%SCREENSHOTS_DIR%"

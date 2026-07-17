@@ -107,7 +107,7 @@ export default function BrowserAuth({ loginUrl, onClose, onCaptured, showCapture
               setStatus(`Redirecting to ${msg.url}`);
               // BrowserAuth is launched as a popup from the debug
               // dashboard (`window.open(..., 'popup')` in
-              // debug_server.py:launchMitmProxy). Navigating the popup
+              // debug_server.py:launchBitmProxy). Navigating the popup
               // itself leaves the dashboard tab parked and looks like a
               // "new tab opened" from the user's perspective. Drive the
               // OPENER instead (the dashboard tab) and close the popup,
