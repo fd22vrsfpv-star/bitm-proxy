@@ -15,6 +15,53 @@ in one process tree.
 
 ---
 
+## Dashboard
+
+The control-plane dashboard on `:8092` surfaces everything the proxy and
+the hosted browser session capture. The screenshots below are from the DEF
+CON RTV lab against a disposable test tenant — tenant identifiers and token
+previews are redacted.
+
+### Captured Data
+
+![Captured Data — credential list](docs/screenshots/captured-data-list.png)
+
+Every captured session, grouped by site and user, with live header / cookie
+/ token counts and per-record Copy / Export / Delete.
+
+![Captured Data — per-record test actions](docs/screenshots/captured-data-panels.png)
+
+Expand a record to replay captured tokens against Microsoft Graph, run a
+**ROPC** legacy-auth check (does the tenant block `grant_type=password`?),
+or mint an **Azure DevOps PAT** straight from captured creds — each a
+one-click test with the result inline.
+
+### Flow Trace
+
+![Flow Trace](docs/screenshots/flow-trace.png)
+
+The full request/response timeline for a login, auto-grouped into milestones
+(LOGIN → TOKENS → REFRESH → BEARER). Click any exchange for its headers and
+body; tracked values are tainted and followed across requests.
+
+### Index
+
+![Index](docs/screenshots/index.png)
+
+Every request/response header and decoded-JWT claim across the session,
+grouped by name with unique-value and occurrence counts — jump straight to
+where each value appears.
+
+### All Logs
+
+![All Logs](docs/screenshots/all-logs.png)
+
+The live event stream — captures, token issuance/refresh, requests, and MFA
+challenges. Captured inputs are masked and token values redacted in the UI
+by default.
+
+---
+
 ## Quick start — `run-local.sh`
 
 Simplest way to get running. Works on macOS and Linux in the foreground;

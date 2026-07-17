@@ -38,10 +38,18 @@ config/slack_*.txt
 ~$*
 
 # Presentation decks + their assets — kept out of the repo (distributed
-# separately). Covers the root and docs/ copies and the screenshot assets.
+# separately). Covers the root and docs/ copies.
 DEFCON-RTV-2025-slides.*
-docs/screenshots/
 docs/IGotIn-NowWhat*.pptx
+
+# Screenshots: ignore everything (raw dashboard captures carry lab-tenant
+# identifiers / tokens) EXCEPT the hand-redacted set embedded in the README.
+docs/screenshots/*
+!docs/screenshots/captured-data-panels.png
+!docs/screenshots/captured-data-list.png
+!docs/screenshots/flow-trace.png
+!docs/screenshots/index.png
+!docs/screenshots/all-logs.png
 
 # Data (runtime)
 *.log
