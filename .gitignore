@@ -37,6 +37,12 @@ config/slack_*.txt
 # Office lock/temp files (e.g. ~$deck.pptx while PowerPoint has it open)
 ~$*
 
+# Presentation decks + their assets — kept out of the repo (distributed
+# separately). Covers the root and docs/ copies and the screenshot assets.
+DEFCON-RTV-2025-slides.*
+docs/screenshots/
+docs/IGotIn-NowWhat*.pptx
+
 # Data (runtime)
 *.log
 
