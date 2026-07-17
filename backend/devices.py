@@ -354,6 +354,114 @@ def _primary_locale(fp: dict, fallback: str = "en-US") -> str:
     return (al.split(",", 1)[0].split(";")[0].strip()) or fallback
 
 
+def _apply_ua_hints(fp: dict, ua_hints: Any) -> None:
+    """Fold `navigator.userAgentData.getHighEntropyValues()` output into the
+    header-shaped fingerprint dict (`sec-ch-ua*`). Shared by
+    `register_from_session` (live page probe) and
+    `profile_from_external_fingerprint` (stored silent-capture fingerprint)
+    so both synthesise identical client-hint headers from the same signals."""
+    if not isinstance(ua_hints, dict):
+        return
+    if ua_hints.get("brands") or ua_hints.get("fullVersionList"):
+        try:
+            lst = ua_hints.get("fullVersionList") or ua_hints.get("brands") or []
+            fp["sec-ch-ua"] = ", ".join(
+                f'"{b.get("brand","")}";v="{b.get("version","")}"' for b in lst)
+        except Exception:
+            pass
+    if ua_hints.get("mobile") is not None:
+        fp["sec-ch-ua-mobile"] = "?1" if ua_hints["mobile"] else "?0"
+    if ua_hints.get("platform"):
+        fp["sec-ch-ua-platform"] = f'"{ua_hints["platform"]}"'
+    for k_src, k_hdr in (
+        ("platformVersion", "sec-ch-ua-platform-version"),
+        ("architecture", "sec-ch-ua-arch"),
+        ("bitness", "sec-ch-ua-bitness"),
+        ("model", "sec-ch-ua-model"),
+        ("uaFullVersion", "sec-ch-ua-full-version"),
+        ("wow64", "sec-ch-ua-wow64"),
+    ):
+        v = ua_hints.get(k_src)
+        if v not in (None, ""):
+            fp[k_hdr] = f'"{v}"' if isinstance(v, str) else (
+                "?1" if v is True else "?0" if v is False else str(v))
+
+
+def profile_from_external_fingerprint(fp_src: dict,
+                                      name: str | None = None) -> dict:
+    """Build a device-profile record from a silent-capture fingerprint.
+
+    `silent.html` / `/api/capture/external` store a JS-shaped fingerprint
+    (`user_agent`, `languages`, `ua_data` = getHighEntropyValues output,
+    `screen`, `viewport`, `timezone`). This converts it into the same
+    header-shaped device profile `register_from_session` produces from a
+    live page, so a follow-on `:8091` session can replay the visitor's
+    real device signature. Ephemeral by default — the caller decides
+    whether to persist it via `register_manual`."""
+    fp_src = fp_src or {}
+    fp: dict[str, str] = {}
+    ua = fp_src.get("user_agent") or ""
+    if ua:
+        fp["User-Agent"] = ua
+    langs = fp_src.get("languages") or []
+    if isinstance(langs, list) and langs:
+        fp["Accept-Language"] = ",".join(str(x) for x in langs[:3]) + ";q=0.9"
+    _apply_ua_hints(fp, fp_src.get("ua_data"))
+
+    rec = _empty_record(_new_id(), name or "Silent-capture device", "captured")
+    rec["fingerprint"] = fp
+    fam, ch, imp = _derive(fp)
+    rec["engine_family"] = fam
+    rec["channel"] = ch
+    rec["impersonate_tag"] = imp
+    rec["locale"] = (str(langs[0]) if isinstance(langs, list) and langs
+                     else _primary_locale(fp, "en-US"))
+    tz = fp_src.get("timezone")
+    if tz:
+        rec["timezone_id"] = str(tz)
+    vp = fp_src.get("viewport") or {}
+    if isinstance(vp, dict) and vp.get("w") and vp.get("h"):
+        rec["viewport"] = {"width": int(vp["w"]), "height": int(vp["h"])}
+    screen = fp_src.get("screen") or {}
+    if isinstance(screen, dict) and screen.get("dpr"):
+        try:
+            rec["device_scale_factor"] = float(screen["dpr"])
+        except (TypeError, ValueError):
+            pass
+    ua_data = fp_src.get("ua_data") or {}
+    if isinstance(ua_data, dict) and ua_data.get("mobile"):
+        rec["is_mobile"] = True
+        rec["has_touch"] = True
+    return rec
+
+
+def find_or_create_for_cid(cid: str, fp_src: dict,
+                           capture_key: str = "") -> dict | None:
+    """Idempotently resolve the device profile for a correlation id.
+
+    Returns the existing device already built for `cid` (so a visitor who
+    starts several sessions reuses one profile, no Devices-tab churn), or
+    builds+persists a new one from the silent-capture fingerprint and tags
+    it with `cid` + the source capture key for the dashboard linkage.
+    Returns None when there's no usable fingerprint to build from."""
+    if not cid:
+        return None
+    for d in devices_store.list_all():
+        if d.get("cid") == cid:
+            return d
+    rec = profile_from_external_fingerprint(
+        fp_src, name=f"Silent capture {cid[:8]}")
+    if not rec.get("fingerprint"):
+        return None
+    rec["cid"] = cid
+    rec["linked_capture_key"] = capture_key
+    devices_store.put(rec["id"], rec)
+    _log("device_from_cid", rec["id"], name=rec["name"], cid=cid,
+         capture_key=capture_key, engine=rec["engine_family"],
+         ua=_ua_of(rec["fingerprint"])[:120])
+    return rec
+
+
 # ── Read-side ─────────────────────────────────────────────
 
 def list_all() -> list[dict]:
@@ -604,30 +712,7 @@ async def register_from_session(page, modes: list[str],
             ": null")
     except Exception:
         ua_hints = None
-    if isinstance(ua_hints, dict):
-        if ua_hints.get("brands") or ua_hints.get("fullVersionList"):
-            try:
-                lst = ua_hints.get("fullVersionList") or ua_hints.get("brands") or []
-                fp["sec-ch-ua"] = ", ".join(
-                    f'"{b.get("brand","")}";v="{b.get("version","")}"' for b in lst)
-            except Exception:
-                pass
-        if ua_hints.get("mobile") is not None:
-            fp["sec-ch-ua-mobile"] = "?1" if ua_hints["mobile"] else "?0"
-        if ua_hints.get("platform"):
-            fp["sec-ch-ua-platform"] = f'"{ua_hints["platform"]}"'
-        for k_src, k_hdr in (
-            ("platformVersion", "sec-ch-ua-platform-version"),
-            ("architecture", "sec-ch-ua-arch"),
-            ("bitness", "sec-ch-ua-bitness"),
-            ("model", "sec-ch-ua-model"),
-            ("uaFullVersion", "sec-ch-ua-full-version"),
-            ("wow64", "sec-ch-ua-wow64"),
-        ):
-            v = ua_hints.get(k_src)
-            if v not in (None, ""):
-                fp[k_hdr] = f'"{v}"' if isinstance(v, str) else (
-                    "?1" if v is True else "?0" if v is False else str(v))
+    _apply_ua_hints(fp, ua_hints)
     rec["fingerprint"] = fp
 
     fam, ch, imp = _derive(fp)

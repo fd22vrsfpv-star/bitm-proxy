@@ -510,6 +510,16 @@ _config: dict[str, Any] = {
     # The route returns 403 on every request unless this flag is set
     # AND the request carries the standard API key.
     "allow_phantom_join": False,
+    # Tenant-domain allowlist for Phantom Join, checked in addition to
+    # allow_phantom_join above. Empty (the default) = unrestricted, i.e.
+    # today's behavior for every existing install — any domain the caller
+    # supplies is accepted. Non-empty is opt-in hardening for a deployment
+    # that must not be pointable at an arbitrary real org (e.g. a
+    # publicly-reachable lab instance) — set via $DATA_DIR/config.json for
+    # that deployment, not this committed file. Case-insensitive exact
+    # match against the "domain" field the caller supplies; tenant domains
+    # don't need wildcard/suffix matching the way hostnames do.
+    "phantom_join_allowed_domains": [],
     "log_requests": False,
     "log_responses": False,
     "log_auth_headers": True,

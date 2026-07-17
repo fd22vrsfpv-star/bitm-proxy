@@ -49,6 +49,37 @@ docker run -p8091:8091 -p8092:8092 \
     -it mitm-proxy
 ```
 
+Builds and runs on arm64 (Apple Silicon) as well as amd64 — verified live,
+not just per docs. Chromium and Firefox both have real arm64 Linux builds
+and work normally; Microsoft Edge does not (Microsoft has never shipped
+one), so `edge-real` mode silently falls back and stays disabled on arm64.
+Set `browser_type` to `firefox` in Configuration (or via
+`/api/config`) for a genuine Gecko engine instead of a Chromium UA spoof.
+
+---
+
+## DEF CON RTV Lab — `docker-compose.yml`
+
+A separate, more locked-down deployment: nginx (TLS termination, landing
+page) fronts the app, so visitors never install a CA cert or configure a
+proxy — they drive a hosted Playwright session through the browser instead.
+Two safety allowlists (`proxy_allowed_hosts`, `phantom_join_allowed_domains`,
+both empty/unrestricted by default) scope the whole deployment to a specific
+tenant, enforced in code, not just documented as policy.
+
+```bash
+./run_demo.sh          # macOS / Linux
+.\run_demo.ps1         # Windows
+```
+
+Defaults to `https://127.0.0.1/` — loopback-only, self-signed cert, safe to
+run as-is. `--public`/`-Public` widens the bind to `0.0.0.0` for a real
+public instance (only after populating the allowlists). See
+[`docs/DEFCON-LAB-SETUP.md`](./docs/DEFCON-LAB-SETUP.md) for the full
+runbook: tenant setup, both allowlists, the reset procedure, and
+cross-platform notes (this stack is verified working on arm64 Linux/macOS,
+not just amd64).
+
 ---
 
 ## Windows
@@ -93,7 +124,7 @@ and 24.04. One command; idempotent; creates a dedicated service user, installs
 systemd unit, starts on boot.
 
 ```bash
-git clone https://github.com/raptordoug/bitm-proxy.git
+git clone https://github.com/fd22vrsfpv-star/bitm-proxy.git
 cd mitm-proxy
 sudo ./install-ubuntu.sh
 ```
@@ -166,7 +197,7 @@ Pentester-side tooling (Burp extension, a separate runner, anything
 that obtains credentials outside the `:3128` MITM path) can push them
 into the same store + Slack channel as in-band captures.
 
-**→ See [`EXTERNAL_CAPTURE_SETUP.md`](./EXTERNAL_CAPTURE_SETUP.md) for complete setup guide with file locations, lander deployment, log formats, and troubleshooting.**
+**→ See [`docs/EXTERNAL_CAPTURE_SETUP.md`](./docs/EXTERNAL_CAPTURE_SETUP.md) for complete setup guide with file locations, lander deployment, log formats, and troubleshooting.**
 
 Configure once:
 
@@ -201,7 +232,7 @@ The endpoint writes through `credentials_store` (encrypted at rest
 when `CREDENTIAL_PASSPHRASE` is set, same as in-band captures) and
 fires `notify_slack_capture` so the Slack capture channel sees external
 ingests identically. `X-Capture-Token` is accepted as an alternative
-header. Per-field reference: `SESSIONS.md` → *External Capture*.
+header. Per-field reference: `docs/SESSIONS.md` → *External Capture*.
 
 ### Lander pages — `pages/lander.html` and `pages/login.html`
 
@@ -281,21 +312,45 @@ sudo -u mitm-proxy \
 
 ---
 
+## Burp Suite integration — RAG findings bridge
+
+`burp-extension/RagScanBridge.py` is a Burp Extender (Jython) extension that
+syncs findings bidirectionally with the built-in RAG API on `:8000`
+(`backend/rag_api.py`) — no external RAG Scan Stack backend required. It's
+adapted from the RAG Scan Stack project's own extension of the same name;
+the endpoints it calls
+(`/health`, `/scope*`, `/engagements*`, `/findings/search`,
+`/export/findings-exchange`, `/import/findings-exchange`) are implemented
+here to match exactly.
+
+- **Download**: Configuration tab → *RAG Scan Stack* → *Burp Suite* → **Download
+  Burp extension** (streams `burp-extension/RagScanBridge.py` from
+  `GET /api/rag/burp-extension/download`).
+- **Install**: Burp Suite → Extender → Add → Extension Type: Python (Jython)
+  → select the downloaded file. Default API URL is
+  `http://localhost:8000` (plain HTTP — the built-in RAG API doesn't
+  terminate TLS itself).
+- **Not supported** against the built-in RAG API: the extension's SOCKS
+  tunnel-node proxy routing and Follow-Up Queue tabs call `/nodes` and
+  `/burp-queue`, which are RAG Scan Stack-specific infrastructure this
+  project doesn't implement — using them here just logs a connection
+  error, not a crash.
+
 ## Architecture
 
 Three docs, in increasing depth:
 
-- **`ARCHITECTURE.md`** — component map: ports, backend modules,
+- **`docs/ARCHITECTURE.md`** — component map: ports, backend modules,
   frontend layout, where each surface (`:8091`, `:8092`, `:3128`,
   `:8000`, `:8085`, `:3129`) lives and what it owns.
-- **`SESSIONS.md`** — every session type (Playwright, sub-session, host
+- **`docs/SESSIONS.md`** — every session type (Playwright, sub-session, host
   capture, credentials, cookies, flow trace, dashboard WS, auth-proxy
   MITM, worker pool, **device profile**), every config variable, every
   environment variable, and the data-directory layout.
-- **`PROXY_DEEP_DIVE.md`** — on-the-wire path of `:3128`: forged CA,
+- **`docs/PROXY_DEEP_DIVE.md`** — on-the-wire path of `:3128`: forged CA,
   per-host cert generation, capture, injection, `curl_cffi` upstream
   TLS impersonation, the device-probe sentinel.
-- **`AUTH_FLOWS.md`** — operator guide for adding/troubleshooting
+- **`docs/AUTH_FLOWS.md`** — operator guide for adding/troubleshooting
   auth-flow milestones (LOGIN → AUTH CODE → TOKENS → SESSION → PRT).
   Covers the diagnostics emitted by **Reclassify milestones**, how to
   capture a representative flow, how to read the milestone shapes
@@ -331,4 +386,4 @@ reusable bundle of fingerprint + (optional) probed JS signals +
 All device events log to the `devices` category — filter the All Logs
 view in the dashboard or grep `journalctl -u mitm-proxy -g DEVICE_`.
 
-Mechanism + storage in `SESSIONS.md` → *Sessions → Device profile*.
+Mechanism + storage in `docs/SESSIONS.md` → *Sessions → Device profile*.

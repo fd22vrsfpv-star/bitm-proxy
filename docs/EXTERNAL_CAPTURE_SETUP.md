@@ -59,6 +59,19 @@ Only IPs on this list can POST to the endpoint (127.0.0.1 is always allowed).
   - `["127.0.0.1", "192.168.1.0/24"]` — local network
   - `["127.0.0.1", "0.0.0.0/0"]` — any IP (for cross-origin landers)
 
+**Behind a reverse proxy (nginx, the DEF CON RTV Lab, etc.):** this check
+uses the raw TCP peer address, **not** `X-Forwarded-For` — traffic
+arriving via a reverse proxy shows up as the proxy's own address, not the
+real client's, and gets rejected unless the proxy's address is on the
+list. The DEF CON RTV Lab's `docker-compose.yml` works around this by
+giving its compose network (`lab_net`) a fixed subnet and pre-seeding
+`external_capture_allowed_ips` with it via a bind-mounted
+`config/lab-config.json` (not `config/config.json` itself — that path is
+`.gitignored`, reserved for real per-deployment secrets) — see
+`docs/DEFCON-LAB-SETUP.md`. Same fix applies to any other nginx-fronted
+deployment: allowlist the proxy container/host's actual address, not the
+real visitor's.
+
 ### 3. Configure CORS (if hosting lander on separate domain)
 
 If your lander is on `example.com` and you want it to POST to the proxy:
@@ -252,6 +265,32 @@ https://example.com/silent.html
 ```
 
 The captured data (fingerprint ID, confidence, screen, timezone) appears in the logs and Creds tab like any other external capture.
+
+### Setup Option 4: DEF CON RTV Lab (Docker Compose)
+
+The lab's `Dockerfile` bakes both pages into the image's `static/` at
+build time (`COPY pages/silent.html pages/lander.html ./static/`) —
+no manual copy-into-`static/` step needed, unlike Options 1-3 above.
+Both are already pre-configured for same-origin deployment:
+
+```javascript
+// Both pages, already set this way in the repo:
+token:    "lab-demo-capture-token",   // matches EXTERNAL_CAPTURE_TOKEN
+          //   in docker-compose.yml — change both together
+endpoint: "/api/capture/external",    // relative path, works through
+          //   nginx regardless of domain
+```
+
+`nginx/rtvbitm` exposes friendly aliases that redirect to the real
+filenames: `/silent` → `/silent.html`, `/lander` → `/lander.html`, both
+proxied to `app:8091` (where `main.py`'s static catch-all serves them).
+Linked from the landing page (`pages/lab-landing.html`) under
+"Reconnaissance & capture demos", with an explicit on-page warning not to
+enter real credentials on the lander page — it genuinely captures
+whatever's typed and, per `next_url` matching the app's own
+`default_login_url`, forwards the browser to the real Microsoft login
+portal afterward so the flow looks unbroken, same as a real engagement.
+See `docs/DEFCON-LAB-SETUP.md` for the full lab runbook.
 
 ---
 

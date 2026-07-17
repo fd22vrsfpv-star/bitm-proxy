@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from backend.store import JsonStore
 from backend.shared import append_log, get_config_value
+from backend.site_rules import host_allowed_for_proxy
 
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
@@ -1438,6 +1439,11 @@ async def _handle_http(reader, writer, method, target, version, raw_headers):
     if parsed.query:
         path += "?" + parsed.query
 
+    if not host_allowed_for_proxy(hostname):
+        await _plain_http_passthrough(reader, writer, method, path, version,
+                                       raw_headers, hostname, port)
+        return
+
     # Parse existing headers into a dict
     headers = {}
     for h in raw_headers:
@@ -1635,6 +1641,11 @@ async def _handle_connect(reader, writer, target, raw_headers):
     creds = _get_credentials_for_host(hostname)
     has_ca = _ca_key is not None
 
+    if not host_allowed_for_proxy(hostname):
+        _log(f"TUNNEL {hostname}:{port} (not in proxy_allowed_hosts — passthrough, no MITM)", "debug")
+        await _plain_tunnel(reader, writer, hostname, port)
+        return
+
     # Always MITM when a CA is available so we can capture state; injection
     # still happens when creds exist, and no-op otherwise.
     if has_ca:
@@ -1672,6 +1683,53 @@ async def _plain_tunnel(reader, writer, hostname, port):
 
     _log(f"TUNNEL {hostname}:{port}", "debug")
     await asyncio.gather(pipe(reader, remote_writer), pipe(remote_reader, writer))
+    remote_writer.close()
+
+
+async def _plain_http_passthrough(reader, writer, method, path, version, raw_headers, hostname, port):
+    """Byte-faithful single-request relay for hosts not in
+    proxy_allowed_hosts — no capture, no credential injection, no
+    probe/device interception. The plain-HTTP counterpart to
+    _plain_tunnel's role for CONNECT."""
+    content_length = 0
+    for h in raw_headers:
+        if ":" in h and h.split(":", 1)[0].strip().lower() == "content-length":
+            try:
+                content_length = int(h.split(":", 1)[1].strip())
+            except ValueError:
+                content_length = 0
+            break
+    body = await reader.read(content_length) if content_length > 0 else b""
+
+    try:
+        remote_reader, remote_writer = await asyncio.wait_for(
+            asyncio.open_connection(hostname, port), timeout=10)
+    except Exception as e:
+        _log(f"Connect failed {hostname}:{port} (passthrough) — {e}", "warn")
+        writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+        await writer.drain()
+        return
+
+    req = f"{method} {path} {version}\r\n"
+    for h in raw_headers:
+        req += h + "\r\n"
+    req += "\r\n"
+    remote_writer.write(req.encode())
+    await remote_writer.drain()
+    if body:
+        remote_writer.write(body)
+        await remote_writer.drain()
+
+    _log(f"HTTP {method} {hostname}{path[:120]}  (not in proxy_allowed_hosts — passthrough)", "debug")
+    try:
+        while True:
+            data = await remote_reader.read(65536)
+            if not data:
+                break
+            writer.write(data)
+            await writer.drain()
+    except Exception:
+        pass
     remote_writer.close()
 
 

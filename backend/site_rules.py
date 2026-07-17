@@ -149,6 +149,41 @@ def host_matches_body_capture(host: str) -> bool:
     return _host_matches(body_capture_hostnames(), host)
 
 
+def proxy_allowed_hosts() -> list[str]:
+    """Hostname allowlist for the :3128 auth proxy's MITM interception.
+
+    Empty (the default) means unrestricted — every existing install keeps
+    today's behavior. Non-empty is opt-in hardening for deployments (e.g. a
+    publicly-reachable lab instance) that must not intercept/decrypt traffic
+    to arbitrary hosts. See config/sites.yaml globals.proxy_allowed_hosts."""
+    return [s.lower() for s in _globals().get("proxy_allowed_hosts", [])]
+
+
+def _host_allowed(patterns: list[str], host: str) -> bool:
+    """Strict allowlist match: exact hostname, or exact subdomain suffix
+    with a dot boundary. Deliberately NOT `_host_matches` (substring-based,
+    built for noise-filtering heuristics) — a bare substring match would let
+    "microsoft.com" also match "evil-microsoft.com.attacker.net", which is
+    unacceptable for a security boundary."""
+    h = (host or "").lower()
+    for p in patterns:
+        p = (p or "").lower().strip()
+        if not p:
+            continue
+        if h == p or h.endswith("." + p):
+            return True
+    return False
+
+
+def host_allowed_for_proxy(host: str) -> bool:
+    """True if the :3128 proxy should MITM this host. Always True when
+    proxy_allowed_hosts() is empty (unrestricted default)."""
+    allowed = proxy_allowed_hosts()
+    if not allowed:
+        return True
+    return _host_allowed(allowed, host)
+
+
 # Compiled console-filter regex, cached against the merged-rules dict
 # identity so a YAML hot-reload (which produces a fresh dict) triggers
 # recompilation exactly once. None when no patterns are configured.

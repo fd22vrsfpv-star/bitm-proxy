@@ -32,7 +32,7 @@
 #   SERVICE_USER   (default mitm-proxy)
 #   BIND_HOST      (default 127.0.0.1 — set 0.0.0.0 to expose on LAN,
 #                   but put nginx + TLS + basic-auth in front if you do)
-#   REPO_URL       (default https://github.com/raptordoug/bitm-proxy.git,
+#   REPO_URL       (default https://github.com/fd22vrsfpv-star/bitm-proxy.git,
 #                   only used when script is run outside a repo checkout)
 #   GO_VERSION     (default 1.22.10)
 
@@ -43,7 +43,7 @@ DATA_DIR="${DATA_DIR:-/var/lib/mitm-proxy}"
 SERVICE_USER="${SERVICE_USER:-mitm-proxy}"
 SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
-REPO_URL="${REPO_URL:-https://github.com/raptordoug/bitm-proxy.git}"
+REPO_URL="${REPO_URL:-https://github.com/fd22vrsfpv-star/bitm-proxy.git}"
 GO_VERSION="${GO_VERSION:-1.22.10}"
 UNIT_PATH="/etc/systemd/system/mitm-proxy.service"
 UNIT_NAME="mitm-proxy"

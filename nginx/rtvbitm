@@ -1,0 +1,308 @@
+# nginx site config for the bitm-proxy DEF CON RTV lab.
+# Targets rtvbitm — replace server_name and the Let's Encrypt paths for
+# other hosts. Designed to run as the `nginx` service in docker-compose.yml,
+# reverse-proxying into the `app` compose service by name (proxy_pass targets
+# below use "app", not "127.0.0.1" — see docker-compose.yml for the separate
+# BIND_HOST port-publishing default, which is unrelated to this).
+#
+# Drop into: /etc/nginx/sites-available/bitm-landing (bare-metal use)
+# Enable:    sudo ln -s /etc/nginx/sites-available/bitm-landing /etc/nginx/sites-enabled/
+# Test:      sudo nginx -t
+# Reload:    sudo systemctl reload nginx
+#
+# No login gate — this vhost is fully open to anyone who reaches it. The
+# lab's actual safety boundary is the proxy_allowed_hosts /
+# phantom_join_allowed_domains allowlists (see docs/DEFCON-LAB-SETUP.md),
+# enforced in the app itself, not an nginx auth layer. If you want a login
+# gate back, nginx's standard mechanism is `auth_basic` +
+# `auth_basic_user_file` on this server block (with `auth_basic off;` on
+# any location that must stay reachable without it, e.g. ACME challenges).
+#
+# ── Port binding (BIND_HOST) ──────────────────────────────────────────────
+# docker-compose.yml publishes this vhost's 80/443 via
+# "${BIND_HOST:-127.0.0.1}:PORT:PORT" — loopback-only by default (safe for
+# a visitor self-hosting this against their own tenant), overridden to
+# BIND_HOST=0.0.0.0 (or a specific public interface) for the organizer-run
+# public lab instance. See docs/DEFCON-LAB-SETUP.md.
+#
+# ── Cert (443) ─────────────────────────────────────────────────────────────
+# Public-instance mode (BIND_HOST=0.0.0.0): real domain + Let's Encrypt cert,
+# provisioned separately (not via this file's own HTTP-01 flow).
+# Loopback-default mode: Let's Encrypt can't issue for 127.0.0.1 — use a
+# self-signed cert (one `openssl req` on first run) or supply your own; the
+# browser will show a click-through warning, which is expected/acceptable
+# since it never leaves your own machine. See docs/DEFCON-LAB-SETUP.md.
+
+# ── HTTPS (443) ──────────────────────────────────────────────────────────
+server {
+    # default_server: this is the only vhost in the deployment (the base
+    # nginx:alpine image's own conf.d/default.conf is removed by
+    # lab-entrypoint.sh) — without it, a request with no matching Host
+    # header (bare IP, curl without -H Host, a visitor typing the raw
+    # loopback/public IP instead of the domain) falls through to whichever
+    # server block nginx happens to pick as default, not necessarily this one.
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    http2 on;
+    server_name rtvbitm.com www.rtvbitm.com;
+
+    ssl_certificate     /etc/letsencrypt/live/www.rtvbitm.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/www.rtvbitm.com/privkey.pem;
+
+    # Modern defaults. Certbot usually drops equivalents in
+    # /etc/letsencrypt/options-ssl-nginx.conf — if that file is included
+    # elsewhere, you can remove the ssl_* lines below.
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Landing page lives here — copy pages/lab-landing.html into /var/www/html.
+    root  /var/www/html;
+    index lab-landing.html index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # Friendly alias into the hosted session — "click here to start" on the
+    # landing page links here instead of the raw /tp8091/ path.
+    # `$is_args$args` preserves the query string so the silent-capture
+    # funnel (silent.html → /start?cid=…) carries the correlation id
+    # through to the session UI, which forwards it on the session WS.
+    location = /start {
+        return 302 /tp8091/$is_args$args;
+    }
+
+    # Demo capture pages — served by the app's static catch-all
+    # (main.py's /{path:path} route), not nginx's own static root. Friendly
+    # aliases match the /start convention; the .html paths work directly too
+    # since that's the actual filename the app serves.
+    location = /silent {
+        return 302 /silent.html;
+    }
+    location = /lander {
+        return 302 /lander.html;
+    }
+    location = /silent.html {
+        proxy_pass         http://app:8091/silent.html;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location = /lander.html {
+        proxy_pass         http://app:8091/lander.html;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # Optional: expose the :8092 debug dashboard via /dashboard/. Comment out
+    # if you want to keep :8092 loopback-only. This one IS a reverse proxy
+    # because the dashboard is a real HTTP service (not an HTTP proxy).
+    location /dashboard/ {
+        proxy_pass         http://app:8092/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # ── Dashboard-exclusive API/WS routes ─────────────────────────────────
+    # backend/main.py (:8091) and backend/debug_server.py (:8092) both mount
+    # backend/routes/{browser,devices,capture}.py at the same /api/browser,
+    # /api/devices, /api/capture prefixes — literally the same imported
+    # router modules, sharing one process's in-memory state, so those work
+    # fine via the general /api/ block below regardless of which port
+    # handles them. But the dashboard's own JS also calls a handful of
+    # routes that exist ONLY on :8092 (aaa runner, phantom join, metrics,
+    # test-graph, and its live-update websockets) — those need to be routed
+    # to :8092 explicitly, or they 404 through the :8091-targeted /api/
+    # block below. nginx matches the longest prefix among plain-string
+    # locations, so these don't need to be ordered before/after /api/.
+    location /api/aaa/ {
+        proxy_pass         http://app:8092/api/aaa/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location /api/phantom/ {
+        proxy_pass         http://app:8092/api/phantom/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 24h;   # Phantom Join runs can stay open a long time
+        proxy_send_timeout 24h;
+    }
+    location = /api/metrics {
+        proxy_pass         http://app:8092/api/metrics;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location = /api/test-graph {
+        proxy_pass         http://app:8092/api/test-graph;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location = /api/test-ropc {
+        # Dashboard-exclusive (backend/debug_server.py), same reason as
+        # /api/test-graph above.
+        proxy_pass         http://app:8092/api/test-ropc;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location = /api/create-ado-pat {
+        # Dashboard-exclusive (backend/debug_server.py), same reason as
+        # /api/test-graph above — without this it falls to the general
+        # /api/ block, hits :8091's SPA catch-all, and silently 200s the
+        # frontend shell instead of reaching the handler.
+        proxy_pass         http://app:8092/api/create-ado-pat;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location = /api/rag/burp-extension/download {
+        # Dashboard-exclusive (backend/debug_server.py) — without this,
+        # the general /api/ block below sends it to :8091, whose SPA
+        # catch-all (main.py's /{path:path} route) silently returns
+        # index.html with a 200 instead of a real 404. Confirmed live,
+        # not just reasoned about: this exact failure mode reproduced
+        # before this location block was added.
+        proxy_pass         http://app:8092/api/rag/burp-extension/download;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+    location /ws/ {
+        proxy_pass         http://app:8092/ws/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 24h;   # dashboard's live-update sockets stay open
+        proxy_send_timeout 24h;
+    }
+
+    # ── Reverse-proxy the main app on :8091 ──────────────────────────────
+    # Path-based mount. Browsers hit https://rtvbitm.com/tp8091/... and
+    # nginx transparently forwards to http://app:8091/...  (trailing
+    # slash on proxy_pass strips the /tp8091/ prefix).
+    #
+    # WebSocket-friendly headers are set so the /api/browser/session WS works.
+    #
+    # Caveat: the SPA at :8091 hardcodes asset URLs like /assets/..., which
+    # under /tp8091/ the browser will request as https://rtvbitm.com/assets/...
+    # — outside this location. The /proxy-assets/ and /api/ sibling locations
+    # below handle that (companions to /tp8091/). If you remove this block,
+    # also remove them.
+    location /tp8091/ {
+        proxy_pass         http://app:8091/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 24h;   # WebSocket sessions can stay open indefinitely
+        proxy_send_timeout 24h;
+    }
+
+    # SPA assets + API routes for the app above — kept at their original paths
+    # so the SPA's hardcoded /proxy-assets/* and /api/* URLs resolve correctly.
+    location /proxy-assets/ {
+        proxy_pass         http://app:8091/proxy-assets/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # External credential capture endpoint — auth-gated at the app level
+    # (bearer token + IP allowlist).
+    location /api/capture/external {
+        proxy_pass         http://app:8092/api/capture/external;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    location /api/ {
+        proxy_pass         http://app:8091/api/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 24h;
+        proxy_send_timeout 24h;
+    }
+
+    # Let's Encrypt renewal challenges. (Public-instance mode only — see the
+    # cert note at the top of this file.)
+    location ^~ /.well-known/acme-challenge/ {
+        root       /var/www/html;
+    }
+}
+
+# ── HTTP → HTTPS redirect (80) ───────────────────────────────────────────
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name rtvbitm.com www.rtvbitm.com;
+
+    # Let ACME validators through without being redirected.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ── Dedicated subdomain for the app (alternative to /tp8091/ above) ──────
+# Uncomment this block to mount the full app at https://app.rtvbitm.com/
+# without any path prefix — the SPA's hardcoded /assets/... URLs resolve
+# cleanly because the app owns the entire vhost.
+#
+# Prerequisites:
+#   1. DNS: add an A/AAAA record for app.rtvbitm.com pointing at this host.
+#   2. TLS cert covering app.rtvbitm.com — easiest path:
+#        sudo certbot --nginx -d app.rtvbitm.com \
+#                     --expand -d rtvbitm.com -d www.rtvbitm.com
+#      (--expand adds the new name to the existing cert.)
+#
+# server {
+#     listen 443 ssl;
+#     listen [::]:443 ssl;
+#     http2 on;
+#     server_name app.rtvbitm.com;
+#
+#     ssl_certificate     /etc/letsencrypt/live/www.rtvbitm.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/www.rtvbitm.com/privkey.pem;
+#
+#     location / {
+#         proxy_pass         http://app:8091;
+#         proxy_http_version 1.1;
+#         proxy_set_header   Host              $host;
+#         proxy_set_header   Upgrade           $http_upgrade;
+#         proxy_set_header   Connection        "upgrade";
+#         proxy_set_header   X-Forwarded-For   $remote_addr;
+#         proxy_set_header   X-Forwarded-Proto $scheme;
+#         proxy_read_timeout 24h;
+#         proxy_send_timeout 24h;
+#     }
+# }

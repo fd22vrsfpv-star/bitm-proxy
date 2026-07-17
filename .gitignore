@@ -31,6 +31,12 @@ config/slack_*.txt
 # Claude Code local settings
 .claude/
 
+# agentic-security plugin scan artifacts (findings, scan history, etc.)
+.agentic-security/
+
+# Office lock/temp files (e.g. ~$deck.pptx while PowerPoint has it open)
+~$*
+
 # Data (runtime)
 *.log
 

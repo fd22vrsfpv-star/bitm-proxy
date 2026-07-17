@@ -162,6 +162,20 @@ python phantom_join.py --help
 
 ## Usage
 
+Everything below is direct CLI invocation — `phantom_join.py` itself has
+no built-in gating beyond what's described in Prerequisites. The
+dashboard's Phantom tab (`:8092`, `backend/routes/phantom.py`) wraps the
+same script via `tools/phantom_runner.py` and adds two config-driven
+gates that only apply to *that* invocation path, not direct CLI use:
+`allow_phantom_join` (must be explicitly enabled; the tab is hidden and
+the route 403s otherwise) and `phantom_join_allowed_domains` (empty/
+unrestricted by default — when populated, a dashboard-triggered run is
+rejected with `{type:"denied"}` if `-d`/`domain` isn't on the list). This
+is the safety control that lets the DEF CON RTV Lab expose Phantom Join
+to lab visitors through the dashboard without it being usable against an
+arbitrary real tenant — see `docs/DEFCON-LAB-SETUP.md` and
+`docs/SESSIONS.md` → *Phantom Join*.
+
 ### Basic — Full CA Bypass Chain (Phases 1-7)
 
 ```bash

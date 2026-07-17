@@ -46,6 +46,26 @@ HTTP/1.1 forwarding.
   splice). Otherwise → `_mitm_connect`.
 - `GET|POST|... <abs-url> HTTP/1.1` → `_handle_http`. Plain HTTP path.
 
+Both entry points check `site_rules.host_allowed_for_proxy(hostname)`
+first — an opt-in hostname allowlist (`globals.proxy_allowed_hosts` in
+`config/sites.yaml`, empty/unrestricted by default). When non-empty and
+the host isn't on it, `_handle_connect` forces `_plain_tunnel` (the exact
+same passthrough path used when there's no CA at all — no new plumbing),
+and `_handle_http` uses a dedicated byte-faithful passthrough
+(`_plain_http_passthrough`) that skips `_capture_request` and injection
+entirely, not just the cert forging. Matching is exact-hostname or
+exact-subdomain-suffix with a dot boundary
+(`site_rules._host_allowed`) — deliberately **not** the same
+substring/`"*.suffix"` matcher `noisy_hosts`/`body_capture_hostnames`
+use, since `"microsoft.com"` as a loose substring pattern would also
+match `evil-microsoft.com.attacker.net`, which is unacceptable for a
+security boundary rather than a noise-filtering heuristic. This is the
+load-bearing safety control for the DEF CON RTV Lab
+(`docs/DEFCON-LAB-SETUP.md`) — with no client-side CA/proxy config
+required to use the hosted session, this allowlist is what actually
+stops the shared instance from intercepting an arbitrary real site a
+visitor navigates the session to.
+
 ---
 
 ## Forging the CA + per-host certs

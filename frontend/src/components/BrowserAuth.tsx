@@ -53,6 +53,11 @@ export default function BrowserAuth({ loginUrl, onClose, onCaptured, showCapture
     // can't (see SESSIONS.md).
     const pushFlag = params.get("prefer_push");
     const pushOn = pushFlag === "1" || pushFlag === "true";
+    // Correlation id from the silent-capture funnel (silent.html →
+    // /start?cid=… → here). Forwarded to the session so the backend can
+    // replay the fingerprint captured for this visitor (see browser.py
+    // CID_LINK).
+    const cid = params.get("cid") || "";
     // Match the Playwright viewport to the operator's browser window
     // so the canvas fills the visible area without aspect-ratio bars.
     // 36px reserved for the nav bar when chrome is shown.
@@ -65,6 +70,7 @@ export default function BrowserAuth({ loginUrl, onClose, onCaptured, showCapture
       startUrl ? `start_url=${encodeURIComponent(startUrl)}` : "",
       traceOn ? "trace=true" : "",
       pushOn ? "prefer_push=1" : "",
+      cid ? `cid=${encodeURIComponent(cid)}` : "",
       `width=${winW}`,
       `height=${winH}`,
     ].filter(Boolean).join("&");

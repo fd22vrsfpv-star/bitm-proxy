@@ -1,0 +1,103 @@
+# DEF CON RTV lab stack: the app (Playwright session + dashboard + internal
+# auth proxy) fronted by nginx (TLS termination, landing page). See
+# docs/DEFCON-LAB-SETUP.md for the full runbook.
+#
+# No login gate anywhere in this stack (nginx has no auth_basic; the app's
+# own API key is disabled below) — the safety boundary is entirely the
+# proxy_allowed_hosts / phantom_join_allowed_domains allowlists enforced in
+# the app itself, not an authentication layer. Fine for a supervised lab
+# scoped to a throwaway tenant; do not repurpose this compose file for
+# anything where "anyone who reaches the URL can use it" is unacceptable.
+#
+# Quick start (safe default — loopback only, self-signed cert):
+#   docker compose up --build
+#   open https://127.0.0.1/
+#
+# Public lab instance (organizers only):
+#   BIND_HOST=0.0.0.0 CREDENTIAL_PASSPHRASE='...' \
+#     docker compose up --build -d
+#   (then mount a real cert over /etc/letsencrypt — see the runbook)
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - CREDENTIAL_PASSPHRASE=${CREDENTIAL_PASSPHRASE:-}
+      # backend/auth.py gates every :8091/:8092 request behind a separate
+      # bearer-token API key by default, with no browser-UI path for a
+      # visitor to ever supply one — disabled via the mechanism
+      # backend/auth.py already documents for exactly this case, not a
+      # workaround. (Never disable this for a deployment that publishes
+      # :8091/:8092 to anything beyond loopback — see the :8092 port
+      # mapping below, which is intentionally hardcoded to 127.0.0.1
+      # regardless of BIND_HOST for exactly this reason.)
+      - REQUIRE_API_KEY=false
+      # backend/routes/capture.py's IP allowlist checks the raw TCP peer
+      # address, not X-Forwarded-For — traffic to /api/capture/external
+      # arrives from the nginx container's address on lab_net (below), not
+      # loopback, so it 403s by default. lab_net has a fixed subnet
+      # specifically so config/lab-config.json's external_capture_allowed_ips
+      # (bind-mounted below) stays valid across rebuilds instead of chasing
+      # docker's auto-assigned subnet each time.
+      - EXTERNAL_CAPTURE_TOKEN=${EXTERNAL_CAPTURE_TOKEN:-lab-demo-capture-token}
+      # Base images default to UTC. Set TZ (e.g. TZ=America/New_York) to
+      # override explicitly; otherwise the /etc/localtime bind mount below
+      # already matches the container's clock display to the host's, so
+      # log timestamps (docker logs, the All Logs tab, phantom-log) read
+      # the same as your own terminal without needing this at all on
+      # Linux/macOS hosts.
+      - TZ=${TZ:-}
+    volumes:
+      - app_data:/data
+      - app_screenshots:/screenshots
+      # get_config_value() has no env-var fallback — this is the only way
+      # to pre-seed external_capture_allowed_ips without a manual dashboard
+      # step. Not config/config.json itself (that path is .gitignored,
+      # reserved for real per-deployment secrets/settings) — a
+      # dedicated tracked file bind-mounted over that path at runtime.
+      - ./config/lab-config.json:/app/config/config.json:ro
+      # Matches container clock display to the host's local time zone —
+      # standard Docker trick, works on Linux/macOS hosts (and Windows
+      # under WSL2, matching the WSL2 VM's own zone). No effect on the
+      # actual instant in time, only how it's rendered in logs.
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      # Dashboard reachable directly from the host console (bypassing
+      # nginx) for operator convenience — always loopback-only, not tied
+      # to BIND_HOST, so --public/-Public never widens this one.
+      - "127.0.0.1:8092:8092"
+    # :8091 and the auth proxy (:3128) are still not published at all —
+    # nginx reaches :8091 over the compose network by service name
+    # ("app"); :3128 is used internally by the app's own Playwright
+    # sessions (upstream_proxy_host), exactly as it already runs today.
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      - app
+    entrypoint: ["/lab-entrypoint.sh"]
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:443:443"
+      - "${BIND_HOST:-127.0.0.1}:80:80"
+    volumes:
+      - ./nginx/rtvbitm:/etc/nginx/conf.d/rtvbitm.conf:ro
+      - ./nginx/lab-entrypoint.sh:/lab-entrypoint.sh:ro
+      - ./pages/lab-landing.html:/var/www/html/lab-landing.html:ro
+      - nginx_certs:/etc/letsencrypt
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+
+networks:
+  default:
+    name: lab_net
+    ipam:
+      config:
+        - subnet: 172.28.238.0/24
+
+volumes:
+  app_data:
+  app_screenshots:
+  nginx_certs:
