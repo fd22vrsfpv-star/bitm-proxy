@@ -538,6 +538,21 @@ sites:
       - "mcas.ms/?from="
       - "portal.office.com/?"
 
+  # The My Apps / My Applications portal is the default :8091 landing page,
+  # but it was NOT an auth-complete trigger — so a session that finished
+  # login there captured tokens/headers passively yet never snapshotted
+  # cookies + current_url, leaving keepalive_pw's Playwright refresh with
+  # "missing cookies or current_url". Listing it here fires _do_auto_capture
+  # on arrival (gated by login_seen), so the cookie/URL snapshot is written.
+  - name: microsoft_myapps_complete
+    hosts:
+      - myapps.microsoft.com
+      - myapplications.microsoft.com
+      - api.myapplications.microsoft.com
+    auth_complete_url_patterns:
+      - "myapps.microsoft.com"
+      - "myapplications.microsoft.com"
+
 # ============================================================================
 # Login-URL aliases used by the ?target= query param on :8091. Keeps the
 # actual URL out of client-visible artifacts.
