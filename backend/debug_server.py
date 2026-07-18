@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.28.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.28.1")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -4888,9 +4888,9 @@ function renderIntegrations(){
     ${row('ollama_top_p', c.ollama_top_p, 'Nucleus sampling. With low temperature this has minor effect; <code>0.3</code>–<code>0.5</code> is a safe range. Default: 0.3', {step:0.05, min:0, max:1})}
     ${row('ollama_top_k', c.ollama_top_k, 'Restrict to top K tokens. Lower = more focused. Default: 20', {step:1, min:1, max:100})}
     ${row('ollama_num_ctx', c.ollama_num_ctx, 'Context window. Must fit system prompt + flow data + response. Default: 8192 (llama3.1 supports 131072 if you have the RAM).', {step:1024, min:2048})}
-    ${row('ollama_num_predict', c.ollama_num_predict, 'Max tokens to generate. Default <code>512</code> caps analysis length so it can\\'t run away. <code>-1</code> = unlimited (model stops at EOS) — the old default that, with no streaming, made the UI block for the whole generation.', {step:128, min:-1})}
+    ${row('ollama_num_predict', c.ollama_num_predict, 'Max tokens to generate. Default <code>512</code> caps analysis length so it cannot run away. <code>-1</code> = unlimited (model stops at EOS) — the old default that, with no streaming, made the UI block for the whole generation.', {step:128, min:-1})}
     ${row('ollama_keep_alive', c.ollama_keep_alive, 'How long Ollama keeps the model resident after a request (e.g. <code>30m</code>, <code>-1</code> = forever, <code>0</code> = unload immediately). Avoids the multi-second cold reload between analyses.')}
-    ${row('ollama_think', c.ollama_think, 'Thinking/reasoning models (gemma4, qwen3) emit chain-of-thought before the answer. Off = answer directly (recommended for analysis — faster, and stops the num_predict cap from being spent on hidden reasoning, which returns empty). On = keep reasoning. Auto-ignored for models that don\\'t support it.')}
+    ${row('ollama_think', c.ollama_think, 'Thinking/reasoning models (gemma4, qwen3) emit chain-of-thought before the answer. Off = answer directly (recommended for analysis — faster, and stops the num_predict cap from being spent on hidden reasoning, which returns empty). On = keep reasoning. Auto-ignored for models that do not support it.')}
     ${row('ollama_seed', c.ollama_seed, 'Non-zero value = reproducible output (same seed + same prompt → same answer). <code>0</code> = random.', {step:1, min:0})}
 
     <h3 style="margin-top:20px">System Prompt — general</h3>
