@@ -242,6 +242,21 @@ if [ ! -d "$SCRIPT_DIR/static" ] || [ "$REBUILD" = 1 ]; then
     fi
 fi
 
+# ── Dashboard JS syntax check ────────────────────────────────────────────────
+# The whole :8092 dashboard is one inline <script> in
+# backend/debug_server.py's DASHBOARD_HTML. A single syntax error there
+# (e.g. a bad escape in a Python-embedded JS string) silently kills the
+# entire script — the page still 200s but nothing runs and the WebSockets
+# never connect ("the dashboard won't connect"). Catch it here instead of
+# in the browser. Needs node (already required above).
+if [ "$REBUILD" = 1 ]; then
+    echo "==> Checking dashboard JS"
+    "$VENV/bin/python" "$SCRIPT_DIR/scripts/check_dashboard_js.py" || {
+        echo "✗ dashboard JS check failed — fix backend/debug_server.py before starting." >&2
+        exit 1
+    }
+fi
+
 # ── Go daemon build ─────────────────────────────────────────────────────────
 GO_BIN="$SCRIPT_DIR/.local/bitm-proxies"
 mkdir -p "$SCRIPT_DIR/.local"

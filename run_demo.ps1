@@ -80,6 +80,31 @@ if ($Public) {
 $buildArgs = @()
 if ($Rebuild) { $buildArgs += "--build" }
 
+# ── Dashboard JS syntax check (best-effort) ──────────────────────────────────
+# The whole :8092 dashboard is one inline <script> in
+# backend/debug_server.py; a single syntax error there silently kills it --
+# the page still 200s but nothing runs and the WebSockets never connect.
+# We check it before building the image. This needs Python + node on the
+# host, which the Docker-only path doesn't otherwise require, so it's
+# best-effort: skipped (with a note) when they aren't present, since a
+# pure lab operator isn't editing the code -- only a developer who has
+# them would hit (or need to catch) this.
+if ($Rebuild) {
+    $py = Get-Command python3 -ErrorAction SilentlyContinue
+    if (-not $py) { $py = Get-Command python -ErrorAction SilentlyContinue }
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if ($py -and $node) {
+        Write-Host "==> Checking dashboard JS"
+        & $py.Source (Join-Path $PSScriptRoot "scripts\check_dashboard_js.py")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "dashboard JS check failed -- fix backend/debug_server.py before building."
+            exit 1
+        }
+    } else {
+        Write-Host "==> Skipping dashboard JS check (needs python + node on PATH)"
+    }
+}
+
 # Base images default to UTC. Unlike run_demo.sh's macOS/Linux path, there's
 # no reliable Windows-timezone-ID -> IANA-name conversion available in
 # Windows PowerShell 5.1 (no .NET Core ICU APIs here), so this isn't

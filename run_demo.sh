@@ -72,6 +72,21 @@ fi
 BUILD_FLAG=""
 [ "$REBUILD" = 1 ] && BUILD_FLAG="--build"
 
+# ── Dashboard JS syntax check (best-effort) ──────────────────────────────────
+# The whole :8092 dashboard is one inline <script> in
+# backend/debug_server.py; a single syntax error there silently kills it --
+# the page still 200s but nothing runs and the WebSockets never connect.
+# Check it before building the image. Needs python3 + node on the host,
+# which the Docker-only path doesn't otherwise require, so it's best-effort:
+# skipped when they aren't present (a pure operator isn't editing the code).
+if [ "$REBUILD" = 1 ] && command -v python3 >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+    echo "==> Checking dashboard JS"
+    python3 "$SCRIPT_DIR/scripts/check_dashboard_js.py" || {
+        echo "✗ dashboard JS check failed -- fix backend/debug_server.py before building." >&2
+        exit 1
+    }
+fi
+
 # Base images default to UTC; auto-detect the host's IANA zone so
 # container log timestamps (docker logs, All Logs tab, phantom-log) read
 # the same as this terminal. /etc/localtime bind-mounting into the
