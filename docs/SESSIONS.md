@@ -585,7 +585,9 @@ devices in the post-event wipe (`docs/DEFCON-LAB-SETUP.md`).
 | `ollama_top_p` | `0.3` | Nucleus sampling. |
 | `ollama_top_k` | `20` | Restrict to top K tokens. |
 | `ollama_num_ctx` | `8192` | Context window in tokens. |
-| `ollama_num_predict` | `-1` | Max tokens to generate; `-1` = model default. |
+| `ollama_num_predict` | `512` | Max tokens to generate. `-1` = unlimited (model stops at EOS) — the old default that, with no streaming, blocked the UI for the whole generation. |
+| `ollama_keep_alive` | `30m` | How long Ollama keeps the model resident after a request (avoids the multi-second cold reload between analyses). `-1` = forever, `0` = unload immediately. |
+| `ollama_think` | `false` | Thinking/reasoning models (gemma4, qwen3) emit chain-of-thought into `message.thinking`, leaving `message.content` empty until done — so with a `num_predict` cap the model can spend the whole budget reasoning and return **empty** content. `false` = answer directly (recommended for analysis). Auto-retries without the param for models that reject it. |
 | `ollama_seed` | `0` | `0` = random; non-zero for reproducibility. |
 | `ollama_system_prompt` | *(long default)* | General-preset system prompt. |
 | `ollama_system_prompt_sso` | `""` | Override for preset=sso; empty uses bundled schema. |

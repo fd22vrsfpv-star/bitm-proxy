@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.27.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.28.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1056,9 +1056,12 @@ async def ws_control(ws: WebSocket):
                 preset = str(msg.get("preset", "general") or "general")
                 try:
                     from backend.ollama_hook import analyze_flow
+                    async def _send_chunk(delta: str):
+                        await ws.send_json({"type": "flow_analysis_chunk",
+                                            "session_id": sid, "delta": delta})
                     result = await analyze_flow(
                         sid, start_seq=start_seq, end_seq=end_seq,
-                        seqs=seqs, preset=preset)
+                        seqs=seqs, preset=preset, on_chunk=_send_chunk)
                     await ws.send_json({"type": "flow_analysis",
                                         "session_id": sid, **result})
                 except Exception as e:
@@ -3320,6 +3323,7 @@ function urlHtml(u){
 // explicit "dismiss" or by a new analysis overwriting it.
 let _lastAnalysis = {};                          // sid -> { msg, at }
 let _analysisInProgress = {};                    // sid -> { preset, startedAt }
+let _analysisStream = {};                        // sid -> { text, preset } (live streaming buffer)
 
 function _paintAnalysis(sid){
   sid = sid || flowSelectedSid;
@@ -3329,6 +3333,20 @@ function _paintAnalysis(sid){
   // spinner + preset + elapsed seconds — persists across tab switches
   // and row clicks because it's re-painted from state, not from the
   // transient DOM placeholder.
+  // Live streaming buffer wins once the first token lands — show the text
+  // as it generates (with a spinner) instead of a static "in progress".
+  const streaming = _analysisStream[sid];
+  if(streaming && streaming.text){
+    el.innerHTML = `<div class="flow-ai">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <h3 style="margin:0;flex:1">Analysis <span style="color:#78859b;font-weight:400;font-size:12px">(${esc(streaming.preset||'general')} · streaming…)</span></h3>
+        <span style="display:inline-block;width:12px;height:12px;border:2px solid #60a5fa;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite"></span>
+      </div>
+      ${esc(streaming.text)}
+    </div>`;
+    return;
+  }
+
   const inflight = _analysisInProgress[sid];
   if(inflight){
     const ms = Date.now() - inflight.startedAt;
@@ -4870,7 +4888,9 @@ function renderIntegrations(){
     ${row('ollama_top_p', c.ollama_top_p, 'Nucleus sampling. With low temperature this has minor effect; <code>0.3</code>–<code>0.5</code> is a safe range. Default: 0.3', {step:0.05, min:0, max:1})}
     ${row('ollama_top_k', c.ollama_top_k, 'Restrict to top K tokens. Lower = more focused. Default: 20', {step:1, min:1, max:100})}
     ${row('ollama_num_ctx', c.ollama_num_ctx, 'Context window. Must fit system prompt + flow data + response. Default: 8192 (llama3.1 supports 131072 if you have the RAM).', {step:1024, min:2048})}
-    ${row('ollama_num_predict', c.ollama_num_predict, 'Max tokens to generate. <code>-1</code> = model default (unlimited). Lower if analyses run long.', {step:128, min:-1})}
+    ${row('ollama_num_predict', c.ollama_num_predict, 'Max tokens to generate. Default <code>512</code> caps analysis length so it can\\'t run away. <code>-1</code> = unlimited (model stops at EOS) — the old default that, with no streaming, made the UI block for the whole generation.', {step:128, min:-1})}
+    ${row('ollama_keep_alive', c.ollama_keep_alive, 'How long Ollama keeps the model resident after a request (e.g. <code>30m</code>, <code>-1</code> = forever, <code>0</code> = unload immediately). Avoids the multi-second cold reload between analyses.')}
+    ${row('ollama_think', c.ollama_think, 'Thinking/reasoning models (gemma4, qwen3) emit chain-of-thought before the answer. Off = answer directly (recommended for analysis — faster, and stops the num_predict cap from being spent on hidden reasoning, which returns empty). On = keep reasoning. Auto-ignored for models that don\\'t support it.')}
     ${row('ollama_seed', c.ollama_seed, 'Non-zero value = reproducible output (same seed + same prompt → same answer). <code>0</code> = random.', {step:1, min:0})}
 
     <h3 style="margin-top:20px">System Prompt — general</h3>
@@ -5391,7 +5411,7 @@ function docsGoTab(tab){
 }
 
 // ── Config ──
-const INTEGRATION_KEYS=new Set(['rag_enabled','rag_api_url','rag_api_key','rag_engagement_id','ollama_enabled','ollama_url','ollama_model','ollama_temperature','ollama_top_p','ollama_top_k','ollama_num_ctx','ollama_num_predict','ollama_seed','ollama_system_prompt','ollama_system_prompt_sso','ollama_system_prompt_saml','ollama_system_prompt_oidc','ollama_system_prompt_troubleshoot']);
+const INTEGRATION_KEYS=new Set(['rag_enabled','rag_api_url','rag_api_key','rag_engagement_id','ollama_enabled','ollama_url','ollama_model','ollama_temperature','ollama_top_p','ollama_top_k','ollama_num_ctx','ollama_num_predict','ollama_keep_alive','ollama_think','ollama_seed','ollama_system_prompt','ollama_system_prompt_sso','ollama_system_prompt_saml','ollama_system_prompt_oidc','ollama_system_prompt_troubleshoot']);
 const BROWSER_KEYS=['browser_type','browser_chrome','private_mode','mobile_emulation','ignore_ssl','goto_timeout','heartbeat_interval','screenshot_interval','screenshot_quality','screenshot_dpr','max_screenshots'];
 const LOGGING_KEYS=['verbose','log_requests','log_responses','log_auth_headers','log_set_cookies','log_console','log_heartbeats','log_to_file','mask_captured_input'];
 const SLACK_KEYS=['enable_slack_notifications','slack_keepalive_webhook','slack_capture_webhook','slack_routine_webhook'];
@@ -8182,12 +8202,23 @@ function connectControl(){
         if(el)el.innerHTML=`<span style="color:#f87171">&#10007; ${esc(msg.error||'unknown error')}</span>`;
       }
     }
+    else if(msg.type==='flow_analysis_chunk'){
+      // Live token delta — accumulate and repaint. Backend batches these to
+      // ~100ms, so painting per message is cheap.
+      const sid=msg.session_id||flowSelectedSid;
+      if(sid){
+        if(!_analysisStream[sid]) _analysisStream[sid]={text:'', preset:(_analysisInProgress[sid]||{}).preset||'general'};
+        _analysisStream[sid].text += (msg.delta||'');
+        if(currentTab==='flow' && flowSelectedSid===sid) _paintAnalysis(sid);
+      }
+    }
     else if(msg.type==='flow_analysis'){
       // Stash the result per session so it survives row-clicks and tab-switches.
       const sid=msg.session_id||flowSelectedSid;
       if(sid){
         _lastAnalysis[sid]={msg, at: Date.now()};
         delete _analysisInProgress[sid];      // clear in-flight state
+        delete _analysisStream[sid];          // clear live buffer; final render takes over
       }
       _paintAnalysis(sid);
       renderTabs();  // drop the spinner from the Flow Trace tab button

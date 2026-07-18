@@ -746,7 +746,21 @@ _config: dict[str, Any] = {
     "ollama_top_p": 0.3,
     "ollama_top_k": 20,
     "ollama_num_ctx": 8192,
-    "ollama_num_predict": -1,  # -1 = unlimited, model default
+    # Cap generation so a single analysis can't run away. -1 = unlimited
+    # (the model stops only at EOS) — measured worst-case for the flow
+    # analysis, and the reason it felt like a hang: with no cap + no
+    # streaming the UI blocked for the entire (unbounded) generation.
+    "ollama_num_predict": 512,
+    # How long Ollama keeps the model resident after a request. Avoids the
+    # multi-second cold reload between analyses (default was Ollama's 5m).
+    "ollama_keep_alive": "30m",
+    # Thinking/reasoning models (e.g. gemma4, qwen3) emit chain-of-thought
+    # into message.thinking, leaving message.content empty until it's done.
+    # For flow analysis we want the answer, not the CoT — and with a
+    # num_predict cap the model can spend the whole budget thinking and
+    # return EMPTY content. Default off. Ignored (with graceful fallback)
+    # for models that don't support the param.
+    "ollama_think": False,
     "ollama_seed": 0,           # 0 = random, any int for reproducibility
     # Optional per-preset overrides. Leave empty to use the built-in defaults
     # shipped in backend/ollama_hook.py._PRESET_PROMPTS. When set, they win.

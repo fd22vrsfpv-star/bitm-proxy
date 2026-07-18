@@ -8,6 +8,7 @@ markdown. Disabled by default; enable via `ollama_enabled=true` in config.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -350,7 +351,12 @@ async def analyze_flow(
     end_seq: int | None = None,
     seqs: list[int] | None = None,
     preset: str = "general",
+    on_chunk=None,
 ) -> dict[str, Any]:
+    """Analyze a flow via Ollama. When `on_chunk` (an async callable) is
+    given, generation is streamed and `on_chunk(delta_text)` is awaited for
+    each batched delta so the caller can push it to the UI live; the full
+    text is still returned in the result dict either way."""
     if not get_config_value("ollama_enabled", False):
         return {"ok": False, "error": "ollama_enabled is false; enable it in config"}
     entries = get_flow(session_id)
@@ -372,7 +378,9 @@ async def analyze_flow(
     top_p = float(get_config_value("ollama_top_p", 0.3))
     top_k = int(get_config_value("ollama_top_k", 20))
     num_ctx = int(get_config_value("ollama_num_ctx", 8192))
-    num_predict = int(get_config_value("ollama_num_predict", -1))
+    num_predict = int(get_config_value("ollama_num_predict", 512))
+    keep_alive = str(get_config_value("ollama_keep_alive", "30m") or "30m")
+    think = bool(get_config_value("ollama_think", False))
     seed = int(get_config_value("ollama_seed", 0))
     if not base_url:
         return {"ok": False, "error": "ollama_url not configured"}
@@ -405,9 +413,19 @@ async def analyze_flow(
     if seed != 0:
         options["seed"] = seed
 
+    # Stream so the UI shows tokens as they generate instead of blocking on
+    # the full completion (the dominant "feels like a hang" factor). Deltas
+    # are batched (~100ms / ~80 chars) so we don't flood the WebSocket or
+    # thrash the frontend re-render on every token.
     payload = {
         "model": model,
-        "stream": False,
+        "stream": True,
+        "keep_alive": keep_alive,
+        # think=False makes reasoning models answer directly instead of
+        # spending the num_predict budget on hidden chain-of-thought (which
+        # can otherwise return empty content). Dropped on retry if the model
+        # rejects the param.
+        "think": think,
         "options": options,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -415,17 +433,57 @@ async def analyze_flow(
         ],
     }
 
+    content = ""
     try:
+        pending = ""
+        last_flush = time.monotonic()
+
+        async def _flush(force=False):
+            nonlocal pending, last_flush
+            if not on_chunk or not pending:
+                return
+            if force or len(pending) >= 80 or (time.monotonic() - last_flush) >= 0.10:
+                try:
+                    await on_chunk(pending)
+                except Exception:
+                    pass
+                pending = ""
+                last_flush = time.monotonic()
+
         async with httpx.AsyncClient(timeout=180, verify=False) as client:
-            resp = await client.post(f"{base_url}/api/chat", json=payload)
-        if resp.status_code >= 400:
-            return {"ok": False,
-                    "error": f"ollama HTTP {resp.status_code}: {resp.text[:300]}"}
-        data = resp.json()
-        content = ""
-        if isinstance(data, dict):
-            msg = data.get("message") or {}
-            content = msg.get("content") or data.get("response") or ""
+            for attempt in (1, 2):
+                content = ""
+                pending = ""
+                async with client.stream("POST", f"{base_url}/api/chat",
+                                         json=payload) as resp:
+                    if resp.status_code >= 400:
+                        body = (await resp.aread())[:300].decode("utf-8", "replace")
+                        # Some models don't accept the `think` param — retry once
+                        # without it rather than failing the analysis.
+                        if (attempt == 1 and "think" in payload
+                                and "think" in body.lower()):
+                            payload.pop("think", None)
+                            continue
+                        return {"ok": False,
+                                "error": f"ollama HTTP {resp.status_code}: {body}"}
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except Exception:
+                            continue
+                        delta = (obj.get("message") or {}).get("content") \
+                            or obj.get("response") or ""
+                        if delta:
+                            content += delta
+                            pending += delta
+                            await _flush()
+                        if obj.get("done"):
+                            break
+                break  # streamed successfully
+        await _flush(force=True)
         append_log("info", "ollama",
                    f"Analysis complete ({len(content)} chars)",
                    session_id=session_id)
@@ -436,4 +494,4 @@ async def analyze_flow(
                 "truncated": truncated}
     except Exception as e:
         append_log("warn", "ollama", f"Analysis failed: {e}", session_id=session_id)
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "analysis": content}
