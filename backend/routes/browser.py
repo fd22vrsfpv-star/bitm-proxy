@@ -2066,6 +2066,8 @@ async def browser_session(
         # framenavigated re-fires. Keyed by id(page); cleared implicitly
         # when pages are GC'd at session end.
         _push_clicked: set[int] = set()
+        # Same idea for the Temporary-Access-Pass → password switch below.
+        _tap_handled: set[int] = set()
 
         # Selectors that pick out the push-approval tile across MS's
         # picker variants. `[data-value]` is the stable contract on the
@@ -2364,6 +2366,90 @@ async def browser_session(
             except Exception as e:
                 _log(f"AUTO-MFA: push tile auto-select skipped: {e}",
                      session_id=sid, level="debug")
+
+        # Selectors that switch a non-password credential screen (here, the
+        # Temporary Access Pass entry) to the password option: a direct
+        # "use your password" affordance, or the Password tile on the
+        # credential picker (reached via the "other ways" link).
+        _password_option_selector = (
+            'a:has-text("Use your password"), '
+            'a:has-text("your password instead"), '
+            'a:has-text("Sign in with your password"), '
+            '[data-value="Password"]'
+        )
+
+        async def _try_prefer_password_over_tap(p):
+            """On MS's 'Enter Temporary Access Pass' screen, prefer the
+            password option when the account still allows it — a human can
+            complete a password in the BITM session, whereas a TAP is an
+            out-of-band code we don't hold. If no password option is
+            offered, leave the TAP prompt in place and proceed with it."""
+            try:
+                url_low = (p.url or "").lower()
+                if not any(h in url_low for h in (
+                        "login.microsoftonline.com",
+                        "login.microsoft.com",
+                        "login.live.com")):
+                    return
+                if id(p) in _tap_handled:
+                    return
+                # Are we on the TAP entry screen? Match on the heading text
+                # or a TAP input, so we don't touch other credential pages.
+                on_tap = await p.evaluate(
+                    "() => {"
+                    "  const t=(document.body.innerText||'').toLowerCase();"
+                    "  const heading=t.includes('temporary access pass');"
+                    "  const input=!!document.querySelector("
+                    "    'input[name=\"accesspass\"],"
+                    "     input[placeholder*=\"access pass\" i],"
+                    "     input[aria-label*=\"access pass\" i]');"
+                    "  return heading || input;"
+                    "}")
+                if not on_tap:
+                    return
+
+                # Is a password option directly available on this screen?
+                try:
+                    opt = await p.wait_for_selector(
+                        _password_option_selector, timeout=1200,
+                        state="visible")
+                except Exception:
+                    opt = None
+                # If not, open the method picker ("other ways") and look
+                # for a Password tile there.
+                if not opt:
+                    try:
+                        link = await p.wait_for_selector(
+                            _other_ways_selector, timeout=1000,
+                            state="visible")
+                    except Exception:
+                        link = None
+                    if link:
+                        await link.click()
+                        try:
+                            opt = await p.wait_for_selector(
+                                '[data-value="Password"], '
+                                'div[role="button"]:has-text("Password"), '
+                                'div[role="listitem"]:has-text("Password")',
+                                timeout=2500, state="visible")
+                        except Exception:
+                            opt = None
+
+                _tap_handled.add(id(p))
+                if opt:
+                    await opt.click()
+                    _log("AUTO-LOGIN: TAP screen — password option "
+                         "available; switched to password.",
+                         category="auth", session_id=sid)
+                else:
+                    _log("AUTO-LOGIN: TAP (Temporary Access Pass) screen — "
+                         "no password option offered; proceeding with the "
+                         "TAP prompt.", category="auth", session_id=sid,
+                         level="warn")
+            except Exception as e:
+                _log(f"AUTO-LOGIN: TAP/password check skipped: {e}",
+                     session_id=sid, level="debug")
+
         # Enable virtual WebAuthn authenticator via CDP so FIDO/passkey pages
         # don't hang waiting for a real hardware key
         try:
@@ -2504,6 +2590,11 @@ async def browser_session(
             if _prefer_push_on:
                 p.on("domcontentloaded",
                      lambda: _fire_and_forget(_try_select_push(p)))
+            # Prefer the password screen over a Temporary Access Pass prompt
+            # (a human can complete password; TAP is out-of-band). Always on —
+            # it's a no-op unless the TAP screen actually renders.
+            p.on("domcontentloaded",
+                 lambda: _fire_and_forget(_try_prefer_password_over_tap(p)))
 
         _attach_page_handlers(page)
 
