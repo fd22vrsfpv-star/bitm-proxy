@@ -72,6 +72,18 @@ RUN set -eux; \
     pwsh --version
 ENV POWERSHELL_TELEMETRY_OPTOUT=1
 
+# Az.Accounts PowerShell module — used only by the Get-AAATokenFromAzLogin
+# helper (backend/aaa_runner.py:acquire_token_via_az_login), which runs
+# Connect-AzAccount -> Get-AzAccessToken to mint a Graph token and stash it on
+# a captured credential record. It's NOT bundled with pwsh and NOT needed by
+# the AAA runner itself (that path is raw Graph REST), so it's a separate
+# layer. Installed AllUsers-scope from PSGallery at build time.
+RUN pwsh -NoProfile -NonInteractive -Command \
+    "\$ErrorActionPreference='Stop'; \
+     Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
+     Install-Module -Name Az.Accounts -Scope AllUsers -Repository PSGallery -Force -AllowClobber; \
+     Write-Host ('Az.Accounts ' + (Get-Module -ListAvailable Az.Accounts).Version.ToString() + ' installed')"
+
 # Install Python deps + Playwright browsers (Chromium + Edge + Firefox).
 # Edge has no arm64 Linux build at all (Microsoft has never shipped one —
 # confirmed against a live arm64 build, not just docs) so it's best-effort
