@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.28.2")
+app = FastAPI(title="BITM Proxy Debug", version="1.28.3")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -2531,7 +2531,15 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function mask(s){return configCache.mask_captured_input?'•'.repeat(Math.min(s.length,20)):esc(s)}
 
 // ── Send command over WS ──
-function send(msg){if(ws&&ws.readyState===1)ws.send(JSON.stringify(msg))}
+// Returns true if the message actually went out. A dropped command
+// (socket mid-reconnect after a server restart) used to vanish silently,
+// leaving callers like analyzeFlow() spinning forever — callers that care
+// now check the return value.
+function send(msg){
+  if(ws&&ws.readyState===1){ws.send(JSON.stringify(msg));return true}
+  console.warn('send: dropped (WS not open, readyState='+(ws?ws.readyState:'null')+'):', msg&&msg.cmd);
+  return false;
+}
 
 // ── Classify ──
 function cls(m){
@@ -3322,8 +3330,13 @@ function urlHtml(u){
 // row-clicks, tab switches, and flow refreshes. Cleared only by an
 // explicit "dismiss" or by a new analysis overwriting it.
 let _lastAnalysis = {};                          // sid -> { msg, at }
-let _analysisInProgress = {};                    // sid -> { preset, startedAt }
+let _analysisInProgress = {};                    // sid -> { preset, startedAt, lastActivity }
 let _analysisStream = {};                        // sid -> { text, preset } (live streaming buffer)
+// Watchdog: if an in-flight analysis goes this long with no activity (no
+// streamed chunk, no completion) it's surfaced as a timeout instead of an
+// infinite spinner. Reset on every chunk, so a slow cold-load/prefill
+// (well under this) never trips it — only a lost command or a real stall.
+const ANALYSIS_WATCHDOG_MS = 45000;
 
 function _paintAnalysis(sid){
   sid = sid || flowSelectedSid;
@@ -3381,13 +3394,26 @@ function _paintAnalysis(sid){
 }
 function _dismissAnalysis(sid){delete _lastAnalysis[sid]; _paintAnalysis(sid)}
 
-// Ticker so the elapsed-seconds counter in the in-progress pane keeps
-// moving while the user watches. Runs once per second; only does work
-// when something is actually in flight.
+// Ticker: keeps the elapsed-seconds counter moving AND enforces the
+// analysis watchdog. Runs once per second; only does work when something
+// is in flight. The watchdog check runs regardless of the current tab so a
+// stalled analysis is cleared even if the operator switched away.
 setInterval(()=>{
-  if(Object.keys(_analysisInProgress).length===0)return;
-  if(currentTab!=='flow')return;
-  _paintAnalysis(flowSelectedSid);
+  const sids=Object.keys(_analysisInProgress);
+  if(sids.length===0)return;
+  const now=Date.now();
+  for(const sid of sids){
+    const inf=_analysisInProgress[sid];
+    if(inf && (now-(inf.lastActivity||inf.startedAt))>ANALYSIS_WATCHDOG_MS){
+      _lastAnalysis[sid]={msg:{ok:false,error:'No response after '+Math.round(ANALYSIS_WATCHDOG_MS/1000)+'s — the analysis stalled or the dashboard connection dropped (e.g. after a server restart). Reload the page (Cmd/Ctrl+Shift+R) and try again.'}, at:now};
+      delete _analysisInProgress[sid];
+      delete _analysisStream[sid];
+      renderTabs();  // drop the spinner badge
+      _toolEnd('Analyze (Ollama)', false, 'timed out — '+Math.round(ANALYSIS_WATCHDOG_MS/1000)+'s no response');
+      if(currentTab==='flow' && flowSelectedSid===sid) _paintAnalysis(sid);
+    }
+  }
+  if(currentTab==='flow') _paintAnalysis(flowSelectedSid);
 }, 1000);
 
 function renderFlowDetail(e){
@@ -4669,13 +4695,27 @@ function analyzeFlow(){
   // Mark the session as having an in-flight analysis so _paintAnalysis can
   // re-render the running state after tab switches, row clicks, or flow
   // rebuilds. Cleared when flow_analysis arrives.
-  _analysisInProgress[flowSelectedSid] = { preset, startedAt: Date.now() };
-  _paintAnalysis(flowSelectedSid);
-  renderTabs();  // tab button picks up the spinner badge
   const payload={cmd:'analyze_flow',session_id:flowSelectedSid,preset:preset};
   if(picks.length)payload.seqs=picks;
   else{payload.start_seq=m.start;payload.end_seq=m.end}
-  send(payload);
+  // Send FIRST and only show the spinner if the command actually went out.
+  // A dropped send (socket mid-reconnect after a server restart) otherwise
+  // left an infinite "in progress" spinner with no request behind it.
+  if(!send(payload)){
+    _lastAnalysis[flowSelectedSid]={msg:{ok:false,error:'Not connected to the dashboard backend right now — the live connection is reconnecting (this happens right after a server restart). Wait a couple of seconds and click Run again.'}, at:Date.now()};
+    delete _analysisInProgress[flowSelectedSid];
+    _paintAnalysis(flowSelectedSid); renderTabs();
+    _toolEnd('Analyze (Ollama)', false, 'connection not ready');
+    return;
+  }
+  const _now=Date.now();
+  // Mark the session as having an in-flight analysis so _paintAnalysis can
+  // re-render the running state after tab switches, row clicks, or flow
+  // rebuilds. lastActivity feeds the watchdog. Cleared when flow_analysis
+  // arrives (or the watchdog fires).
+  _analysisInProgress[flowSelectedSid] = { preset, startedAt: _now, lastActivity: _now };
+  _paintAnalysis(flowSelectedSid);
+  renderTabs();  // tab button picks up the spinner badge
 }
 
 // ── Session debug helpers ─────────────────────────────────────────
@@ -8209,6 +8249,7 @@ function connectControl(){
       if(sid){
         if(!_analysisStream[sid]) _analysisStream[sid]={text:'', preset:(_analysisInProgress[sid]||{}).preset||'general'};
         _analysisStream[sid].text += (msg.delta||'');
+        if(_analysisInProgress[sid]) _analysisInProgress[sid].lastActivity=Date.now();  // reset watchdog
         if(currentTab==='flow' && flowSelectedSid===sid) _paintAnalysis(sid);
       }
     }
