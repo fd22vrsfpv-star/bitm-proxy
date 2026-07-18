@@ -34,6 +34,44 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 
+# ── PowerShell (pwsh) ──
+# The AbuseAzureAPIPermissions ("AAA") runner (backend/aaa_runner.py) shells
+# out to `pwsh` to dot-source tools/AbuseAzureAPIPermissions/AbuseAzureAPIPermissions.ps1
+# and call its recon functions with a captured Graph token. Without pwsh on
+# PATH the AAA tools in the dashboard sit disabled ("`pwsh` not found on PATH").
+# Microsoft's apt repo ships no arm64 PowerShell package, so install from the
+# GitHub release tarball, which provides both linux-x64 and linux-arm64 —
+# keeping the image buildable on amd64 Linux and arm64 (Apple Silicon) alike.
+# Placed before the (slow) Python/Playwright layer so a requirements.txt change
+# doesn't re-pull pwsh and vice versa.
+ARG PS_VERSION=7.4.6
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) ps_arch=x64 ;; \
+        arm64) ps_arch=arm64 ;; \
+        *) echo "unsupported arch for PowerShell" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        curl libgssapi-krb5-2 libstdc++6 zlib1g libc6 libgcc-s1; \
+    # ICU + OpenSSL package names differ across Debian releases (trixie:
+    # libicu76 / libssl3t64; bookworm: libicu72 / libssl3) — pick whichever
+    # the base image provides so this survives a base-image bump.
+    (apt-get install -y --no-install-recommends libicu76 \
+        || apt-get install -y --no-install-recommends libicu72); \
+    (apt-get install -y --no-install-recommends libssl3t64 \
+        || apt-get install -y --no-install-recommends libssl3); \
+    curl -fsSL -o /tmp/powershell.tar.gz \
+        "https://github.com/PowerShell/PowerShell/releases/download/v${PS_VERSION}/powershell-${PS_VERSION}-linux-${ps_arch}.tar.gz"; \
+    mkdir -p /opt/microsoft/powershell/7; \
+    tar zxf /tmp/powershell.tar.gz -C /opt/microsoft/powershell/7; \
+    chmod +x /opt/microsoft/powershell/7/pwsh; \
+    ln -sf /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh; \
+    rm -f /tmp/powershell.tar.gz; \
+    rm -rf /var/lib/apt/lists/*; \
+    pwsh --version
+ENV POWERSHELL_TELEMETRY_OPTOUT=1
+
 # Install Python deps + Playwright browsers (Chromium + Edge + Firefox).
 # Edge has no arm64 Linux build at all (Microsoft has never shipped one —
 # confirmed against a live arm64 build, not just docs) so it's best-effort
