@@ -167,10 +167,12 @@ async def export_findings_exchange(
     return {"findings": filtered[:limit], "total": len(filtered)}
 
 
-@app.post("/import/findings-exchange")
-async def import_findings_exchange(body: dict):
-    findings = body.get("findings", [])
-    source = body.get("source", "external")
+def import_findings(findings: list, source: str = "external") -> dict:
+    """Core import logic — append findings to the in-memory store. Callable
+    both from the HTTP handler below and directly in-process (rag_bridge's
+    submit path short-circuits to this when the configured RAG URL is the
+    built-in API, avoiding an HTTP round-trip to a server on the same event
+    loop)."""
     imported = 0
     skipped = 0
     for f in findings:
@@ -185,3 +187,9 @@ async def import_findings_exchange(body: dict):
                f"Imported {imported} findings from {source} ({skipped} skipped)")
     return {"imported": imported, "skipped": skipped,
             "total_stored": len(_imported_findings)}
+
+
+@app.post("/import/findings-exchange")
+async def import_findings_exchange(body: dict):
+    return import_findings(body.get("findings", []),
+                           body.get("source", "external"))

@@ -12,6 +12,7 @@ sequence of request/response pairs as evidence, plus a summary of key elements
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -19,6 +20,23 @@ from urllib.parse import urlparse
 import httpx
 
 from backend.shared import append_log, get_config_value, get_flow
+
+
+def _is_builtin_rag(url: str) -> bool:
+    """True when `url` points at THIS process's built-in RAG API (:8000 /
+    RAG_PORT on a loopback host). Submitting to ourselves over HTTP means a
+    round-trip to a uvicorn server sharing this event loop — cleaner and
+    deadlock-proof to import in-process instead."""
+    try:
+        u = urlparse(url if "://" in url else "http://" + url)
+        host = (u.hostname or "").lower()
+        port = u.port or (443 if u.scheme == "https" else 80)
+        rag_port = int(os.environ.get("RAG_PORT", "8000"))
+        return (host in ("localhost", "127.0.0.1", "::1",
+                         "host.docker.internal", "app")
+                and port == rag_port)
+    except Exception:
+        return False
 
 
 def _flow_hostname(entries: list[dict]) -> str:
@@ -211,6 +229,20 @@ async def submit_flow_as_finding(
 
     payload = {"source": "bitm-proxy", "findings": [finding]}
     endpoint = f"{url}/import/findings-exchange"
+
+    # Fast path: the configured URL is our own built-in RAG API, which runs
+    # as a uvicorn server on THIS process's shared event loop. POSTing to it
+    # over HTTP is a self-request on the same loop and can stall; import the
+    # finding directly in-process instead.
+    if _is_builtin_rag(url):
+        from backend.rag_api import import_findings
+        res = import_findings([finding], "bitm-proxy")
+        append_log("info", "rag_bridge",
+                   f"Imported trace_flow_for_{_flow_hostname(entries)} "
+                   f"({len(entries)} exchanges) in-process to built-in RAG API: {res}",
+                   session_id=session_id)
+        return {"ok": True, "status": 200, "response": res,
+                "finding_name": finding["name"], "in_process": True}
 
     append_log("info", "rag_bridge",
                f"Submitting trace_flow_for_{_flow_hostname(entries)} ({len(entries)} exchanges) to {endpoint}",
