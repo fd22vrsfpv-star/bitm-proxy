@@ -41,9 +41,10 @@ pointed at anything other than the lab tenant:
       - enrollment.manage.microsoft.com
       - <labtenant>.onmicrosoft.com
   ```
-- **`phantom_join_allowed_domains`** in `$DATA_DIR/config.json` (or via the
-  dashboard's Configuration tab) — Phantom Join will refuse to run against
-  any domain not on this list.
+- **`phantom_join_allowed_domains`** in `$DATA_DIR/config/config.json` (note
+  the `config/` subdir — unlike `$DATA_DIR/sites.yaml`, which has none; or set
+  it via the dashboard's Configuration tab) — Phantom Join will refuse to run
+  against any domain not on this list.
   ```json
   { "phantom_join_allowed_domains": ["<labtenant>.onmicrosoft.com"] }
   ```

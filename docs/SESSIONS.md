@@ -10,7 +10,7 @@ Two parts:
 
 ---
 
-## Sessions — the nine kinds
+## Sessions — the ten kinds
 
 ### 1. Browser session (Playwright)
 
@@ -165,12 +165,12 @@ second attempt uses a different user).
 
 | Attribute | Value |
 |---|---|
-| Store | `backend/subsessions.py` → `_subsessions[sid]` |
+| Store | `backend/subsessions.py` → in-memory `_active[sid]`, backed by `JsonStore("subsessions")` |
 | Created by | `start_subsession(sid, site_id, user_id, login_url)` on browser-session open |
 | User binding | `set_user_id(sid, text)` when the dashboard captures an email/username |
 | Records | `auto_capture`, `captured_input`, `mfa_number_match`, navigation events — each with a timestamp |
 | Visible on | Sessions tab → per-session drill-down |
-| Persisted? | No — sub-sessions live and die with the parent browser session |
+| Persisted? | Yes — `JsonStore("subsessions")` → `$DATA_DIR/subsessions/<sid>.json` (survives restart) |
 
 ### 3. Host capture
 
@@ -180,11 +180,11 @@ multiple users and want a hostname-scoped history.
 
 | Attribute | Value |
 |---|---|
-| Store | `backend/host_captures.py` → `_host_events[hostname]` |
+| Store | `backend/host_captures.py` → in-memory `_cache[hostname]`, backed by `JsonStore("host_captures")` |
 | Key | Hostname (e.g. `login.microsoftonline.com`) |
 | Buffer | Rolling 500 events per host |
 | Visible on | Captures tab |
-| Persisted? | No — in-memory only |
+| Persisted? | Yes — `JsonStore("host_captures")` → `$DATA_DIR/host_captures/<host>.json` (survives restart) |
 
 ### 4. Credentials store
 
@@ -419,11 +419,13 @@ a faint left rule.
 | Key | Default | Purpose |
 |---|---|---|
 | `default_login_url` | `https://myapps.microsoft.com` | URL opened when a session is started with no explicit target. |
-| `login_urls` | 8 presets | Preset buttons in the URL picker. |
+| `login_urls` | 6 presets | Preset buttons in the URL picker. |
 | `auto_login_email` | `""` | Email auto-filled into login pages. Also drives Slack notification routing — when blank, captures/login-starts/keepalives are tagged "unknown user" and route to `slack_routine_webhook` if set. |
 | `upstream_proxy` | `false` | Route Playwright through an upstream HTTP proxy. |
 | `upstream_proxy_host` | `127.0.0.1:3128` | The upstream proxy endpoint. |
-| `enable_token_testing` | `true` | Enables the "test captured token" buttons. |
+| `enable_token_testing` | `true` | Enables the "test captured token" buttons (Test Graph, Test ROPC, the v1+v2 `/token` test, Create ADO PAT). |
+| `default_tenant_id` | `""` | Prefills the tenant field in the ROPC / `/token` / ADO-PAT / AAA tools when set. |
+| `allow_drs_replay` | `false` | Gates the DRS-replay feature (`/api/devices/drs-analyze-token`, `/api/devices/drs-register-from-token`, `/api/devices/drs-credentials*`) — register a device directly from a captured DRS token. |
 | `prefer_push` | `false` | Auto-click MS's "Approve a request on my Microsoft Authenticator app" tile (`[data-value="PhoneAppNotification"]`) on the sign-in method picker. Use when MFA is configured with Authenticator push and the operator has the phone. |
 | `mfa_dead_end_show_qr` | `false` | Operator-launch-only (`v1.19.0+`). On dead-end (only passkey-class tiles in the picker), click the FIDO/passkey tile so MS renders its passkey UI / cross-device QR in the canvas. Diagnostic — BLE pairing from a remote server can't complete. |
 | `mfa_dead_end_device_code_enabled` | `false` | Operator-launch-only (`v1.19.0+`). On dead-end, navigate the Playwright session to `mfa_dead_end_device_code_url`. Tests token issuance via the OAuth 2.0 device-code grant. Skipped if the QR click already advanced the page. |
@@ -574,6 +576,7 @@ devices in the post-event wipe (`docs/DEFCON-LAB-SETUP.md`).
 
 | Key | Default | Purpose |
 |---|---|---|
+| `flow_trace_enabled` | `false` | Master gate for Flow Trace capture (`backend/routes/browser.py` records request/response flow only when on). |
 | `rag_enabled` | `false` | Enables "Send to RAG" button on Flow Trace. |
 | `rag_api_url` | `http://localhost:8000` | External RAG Scan Stack endpoint. `submit_flow_as_finding()` (`backend/rag_bridge.py`) auto-corrects a leftover `https://` scheme back to `http://` for `localhost:8000`/`127.0.0.1:8000`/`host.docker.internal:8000`, since the built-in RAG API doesn't terminate TLS — a common misconfig carried over from `burp-extension/RagScanBridge.py`'s own historical default. |
 | `rag_api_key` | `""` | Sent as `x-api-key`. |
@@ -611,6 +614,11 @@ devices in the post-event wipe (`docs/DEFCON-LAB-SETUP.md`).
 |---|---|---|
 | `keepalive_enabled` | `true` | Run the background keep-alive loop. |
 | `keepalive_interval_minutes` | `5` | Minutes between keep-alive pings. |
+| `keepalive_max_consecutive_failures` | `2` | Give up keeping a session warm after this many back-to-back failures. |
+| `keepalive_trace_enabled` | `false` | Emit per-ping keepalive trace logging. |
+| `keepalive_playwright_fallback_enabled` | `false` | On a stale cookie-replay, fall back to a headless Playwright refresh. |
+| `keepalive_playwright_timeout_seconds` | `12` | Timeout for that Playwright fallback refresh. |
+| `keepalive_flow_capture_enabled` | `false` | Record keepalive requests into the flow trace. |
 
 ### Proxy (Settings → Proxy)
 
@@ -794,7 +802,7 @@ These live in the service environment (set by `install-ubuntu.sh` or
 | `CERTS_DIR` | `$APP_DIR/certs` | Forged-CA store + user-supplied custom CA bundles. |
 | `PLAYWRIGHT_BROWSERS_PATH` | `$APP_DIR/.playwright-browsers` (installer) | Where Chromium/Edge binaries live. |
 | `REQUIRE_API_KEY` | `true` | When `false`, the dashboard skips API-key auth. |
-| `INTERNAL_SECRET` | *(random at install)* | Shared secret between control-plane processes. |
+| `INTERNAL_SECRET` | `dev-internal-secret` | Shared secret gating the Go↔Python internal-auth handshake. **Not** randomized — the same literal is hardcoded in `run-local.sh`, `run_go.sh`, `Dockerfile.hybrid`, and as `debug_server.py`'s fallback. Override via env if you want a non-default value. |
 | `CREDENTIAL_PASSPHRASE` | unset | If set, `credentials_store` + `cookies_store` are AES-256-GCM-encrypted. |
 | `DISABLE_PYTHON_REVPROXY` | unset | `1` to skip binding the Python reverse proxy (Go daemon owns `:8085`). |
 | `DISABLE_GO_AUTHPROXY` | unset | `1` to skip the Go BITM; Python `:3128` keeps auth BITM duties. |
@@ -812,6 +820,8 @@ $DATA_DIR/
 ├── credentials/<key>.json       # per-(site,user) — encrypted if passphrase set
 ├── cookies/<key>.json           # parallel to credentials
 ├── devices/<dev_id>.json        # device profiles (#10) — encrypted if passphrase set
+├── subsessions/<sid>.json       # per-browser-session sub-session events (#2)
+├── host_captures/<host>.json    # rolling per-hostname event store (#3)
 ├── screenshots/<sid>/*.jpg      # per-session frame captures
 ├── logs/                        # only populated when log_to_file = true
 ├── .api_key_plaintext           # mode 0600 — printed by run.py on boot

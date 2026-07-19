@@ -185,8 +185,8 @@ sudo ./install-ubuntu.sh
    Best-effort — the proxy still runs if these fail.
 3. Creates the `bitm-proxy` system user (no shell, home = `/var/lib/bitm-proxy`).
 4. Syncs this checkout to `/opt/bitm-proxy`, builds the Python venv,
-   installs Playwright Chromium + Edge channel, builds the frontend,
-   builds the Go daemon.
+   installs Playwright Chromium + Firefox + WebKit (and the Edge channel
+   best-effort), builds the frontend, builds the Go daemon.
 5. Writes `/etc/systemd/system/bitm-proxy.service` (hardened:
    `ProtectSystem=full`, `ProtectHome=true`, `PrivateTmp=true`).
 6. `systemctl enable --now bitm-proxy`.

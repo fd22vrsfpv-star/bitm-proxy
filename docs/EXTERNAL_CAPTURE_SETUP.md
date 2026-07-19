@@ -91,14 +91,21 @@ If your lander is on `example.com` and you want it to POST to the proxy:
 
 ### Key Directories
 
-| Purpose | Path |
+`$DATA_DIR` differs by deployment: **`/data`** in the Docker image, but
+**`/var/lib/bitm-proxy`** for the `install-ubuntu.sh` systemd install.
+The `/data/…` paths below are the Docker layout; substitute
+`/var/lib/bitm-proxy/…` on a native install (the `/opt`, nginx, and
+systemd-unit rows apply only to the native install, which has no
+container).
+
+| Purpose | Path (`$DATA_DIR` = `/data` Docker · `/var/lib/bitm-proxy` native) |
 |---------|------|
-| Configuration files | `/data/config/` |
-| Stored credentials | `/data/credentials/` |
-| Server logs | `/data/logs/captured.log` |
-| Lander HTML | `/opt/bitm-proxy/pages/lander.html` |
-| Nginx config | `/etc/nginx/sites-available/example` |
-| Service config | `/etc/systemd/system/bitm-proxy.service` |
+| Configuration files | `$DATA_DIR/config/` |
+| Stored credentials | `$DATA_DIR/credentials/` |
+| Server logs | `$DATA_DIR/logs/` |
+| Lander HTML (native install) | `/opt/bitm-proxy/pages/lander.html` |
+| Nginx config (native install) | `/etc/nginx/sites-available/example` |
+| Service config (native install) | `/etc/systemd/system/bitm-proxy.service` |
 
 ### Credential Storage
 
@@ -159,7 +166,7 @@ A lander is an HTML form that captures credentials and POSTs them to `/api/captu
 
 **File to edit:** `/opt/bitm-proxy/pages/lander.html`
 
-**Key CONFIG block (lines 55-65):**
+**Key CONFIG block (the `const CONFIG` object, ~lines 74-84):**
 ```javascript
 const CONFIG = {
   site_id:      "lander-demo",           // ID prefix for stored credentials
@@ -215,7 +222,7 @@ Settings → Configuration → `external_capture_cors_origins`
 
 **Step 3: Update Lander Config**
 
-`/opt/bitm-proxy/pages/lander.html` lines 55-65:
+`/opt/bitm-proxy/pages/lander.html` — the `const CONFIG` object (~lines 74-84):
 ```javascript
 const CONFIG = {
   site_id:      "lander-demo",
@@ -460,7 +467,7 @@ print('Cookies:', len(data.get('cookies', [])))
 **Causes & Fixes:**
 
 1. **Wrong token in lander**
-   - Check: `lander.html` line 57 `token: "..."`
+   - Check: `lander.html` → the `CONFIG.token` value (~line 79)
    - Should match: Configuration → `external_capture_token`
    - Fix: Update the token in lander.html
 

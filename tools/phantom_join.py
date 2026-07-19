@@ -109,7 +109,9 @@ MITRE_MAPPING = {
     4: ["T1550.001 — Use Alternate Authentication Material: Application Access Token"],
     5: ["T1078.004 — Valid Accounts: Cloud Accounts"],
     6: ["T1087.004 — Account Discovery: Cloud Account", "T1526 — Cloud Service Discovery"],
-    7: ["T1526 — Cloud Service Discovery"],
+    7: ["T1556.009 — Modify Authentication Process: Conditional Access Policies",
+        "T1078.002 — Valid Accounts: Domain Accounts",
+        "T1098.001 — Account Manipulation: Additional Cloud Credentials"],
     8: ["T1556.007 — Modify Authentication Process: Hybrid Identity"],
     9: ["T1530 — Data from Cloud Storage"],
 }

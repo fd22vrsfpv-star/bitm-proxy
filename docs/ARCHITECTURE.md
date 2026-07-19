@@ -23,7 +23,7 @@ This document is the high-level component map.
 | **3128** | Forging-CA BITM proxy. Browsers/tools point here. CONNECT tunnels are BITM'd against a generated CA so HTTPS traffic is observable; HTTP/1.1 only on the upstream leg (`curl_cffi` impersonation forces it). | `backend/auth_proxy.py` |
 | **8091** | Operator browser. Serves the React SPA (`frontend/dist/proxy-assets/` → `static/proxy-assets/`); renders a Playwright session as a JPEG canvas via WebSocket. Click/scroll/keystroke roundtrip. | `backend/main.py` + `backend/routes/browser.py` |
 | **8092** | Debug dashboard. Single-page Python-rendered HTML with two WebSockets (`/ws/control` for commands, `/ws/data` for log/flow streaming). Runs the auth proxy on demand, shows captures, drives flow analysis, hosts the Devices tab. | `backend/debug_server.py` |
-| **8000** | RAG API. Implements the RAG Scan Stack-compatible findings surface (`/health`, `/scope*`, `/engagements*`, `/findings/search`, `/export`, `/import`) that `burp-extension/RagScanBridge.py` calls, so that extension works against this built-in API with no external RAG Scan Stack backend. Captured flows become findings via `backend/rag_bridge.py`. Disabled if `RAG_PORT` isn't bound. | `backend/rag_api.py`, `backend/rag_bridge.py` |
+| **8000** | RAG API. Implements the RAG Scan Stack-compatible findings surface (`/health`, `/scope*`, `/engagements*`, `/findings/search`, `/export`, `/import`) that `burp-extension/RagScanBridge.py` calls, so that extension works against this built-in API with no external RAG Scan Stack backend. Captured flows become findings via `backend/rag_bridge.py`. Listens on `RAG_PORT` (default 8000). | `backend/rag_api.py`, `backend/rag_bridge.py` |
 | **8085** | Reverse proxy. Browse `http://localhost:8085/_r/<host>/<path>` (or use the form on `/`) to fetch a target URL through this proxy with logging — handy for replays from a single-tab debugging stance. | `backend/reverse_proxy.py` |
 | **3129** | Test proxy (Go). Pass-through HTTP/HTTPS proxy without BITM, used to A/B against `:3128` when diagnosing. | `go/cmd/bitm-proxies` |
 
@@ -31,7 +31,9 @@ This document is the high-level component map.
 `:8085` are separate uvicorn instances inside the same Python process.
 `:3128` is an asyncio TCP listener inside `:8091`'s loop, auto-started
 when `autostart_auth_proxy=true`. `:3129` is a separate Go binary
-launched as a child process.
+(`go/cmd/bitm-proxies`), built and launched by `run-local.sh` (or baked
+into `Dockerfile.hybrid`) — **not** by `run.py`, and absent from the
+standard `Dockerfile` / `docker-compose.yml` deployment.
 
 ---
 
@@ -86,7 +88,7 @@ backend/
 ├── host_captures.py  # Rolling per-hostname event store (keepalive view)
 ├── keepalive.py      # Background "do something so the cookie stays warm" loop
 ├── ollama_hook.py    # Local LLM endpoint for flow analysis
-├── rag_api.py        # Send a flow window to a configured RAG endpoint
+├── rag_api.py        # RAG API server (:8000) — exposes captured flows as findings
 ├── rag_bridge.py     # Helper used by rag_api
 ├── reverse_proxy.py  # nginx-style reverse proxy primitive (used by debug)
 ├── diagnostics.py    # /api/diagnostics health checks
@@ -130,7 +132,7 @@ it's the load-bearing safety control for a publicly-reachable instance.
 
 ```
 frontend/
-├── package.json           # @1.1.0 — React 18, TS, Vite 5, Tailwind 3
+├── package.json           # @1.30.0 — React 18, TS, Vite 5, Tailwind 3
 ├── vite.config.ts         # build.assetsDir = "proxy-assets"
 └── src/
     ├── main.tsx           # React entry (QueryClient)
@@ -221,7 +223,7 @@ operator clicks    ─► /ws/control {cmd:'hydrate_session', session_id, hostna
                                      :8091 Playwright session
 ```
 
-### B. Device profile (the v1.1 feature)
+### B. Device profile (Devices tab)
 
 ```
 register-from-capture ─► backend.devices.register_from_capture(host, modes, sites)
@@ -264,7 +266,7 @@ that buffer and asks an LLM for an explanation.
 `MINOR` for user-visible features (dashboard tabs, new endpoints, new
 proxy behaviours), `PATCH` for fixes.
 
-Current: **1.1.0** — adds the Devices tab.
+Current: **1.30.0**.
 
 ---
 

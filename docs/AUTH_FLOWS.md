@@ -145,6 +145,11 @@ row should be:
 | `refresh` | A later POST to the same endpoint with `grant_type=refresh_token`. |
 | `prt` | AAD-only: an extra POST to the token endpoint with `grant_type=srv_challenge` *or* a Set-Cookie carrying `x-ms-PRT`. |
 | `session` | Set-Cookie of the IdP's session cookie (`ESTSAUTH*`, `MSPAuth`, `idsrvAuth`, etc) — the artifact that keeps the browser logged in. |
+| `bearer` | A request carrying an `Authorization: Bearer …` token to a resource API (the token being *used*, not issued). |
+| `ca_blocked` | A Conditional Access denial — the sign-in interrupted by a CA policy (e.g. `AADSTS53003`/`50076`); details parsed by `parse_ca_blocked_details()`. |
+| `ca_reprocess` | The CA re-evaluation round-trip after a control is satisfied (policy re-processed, sign-in resumes). |
+| `rp_reject` | The relying party rejecting the assertion/token it was handed. |
+| `mdm_discover` / `mdm_enroll` / `mdm_checkin` | Intune/MDM device-management milestones: enrollment discovery, the enrollment call, and later check-ins. |
 
 For each row that *should* be a milestone but isn't tagged, identify
 which of these matched / didn't:
@@ -176,9 +181,12 @@ specific regex to `login_path_patterns`.
 
 ### AUTH CODE
 
-Tagged when the response has a `Location:` header containing
-`?code=` / `&code=` / `#code=` and that URL also carries `state=` or
-`session_state=` or `client_info=` (the AAD/OIDC convention).
+Tagged when the response's `Location:` header contains `?code=` /
+`&code=` / `#code=` — the header match **alone** is sufficient (no
+`state=` guard on this branch). As a fallback, a **GET** whose own URL
+carries `code=` **and** `state=` / `session_state=` / `client_info=`
+(the AAD/OIDC convention) is also tagged, so a browser landing on the
+redirect is caught even without the originating `Location:` header.
 
 If your IdP uses non-standard query keys, the simplest fix is to add
 the response header itself to the `Location:` regex — but the current
@@ -188,12 +196,18 @@ need to.
 
 ### TOKENS / REFRESH / PRT
 
-Tagged when **all** of these hold:
+Tagged when it looks like a token exchange, by **either** route:
 
-1. `method == "POST"`
-2. URL path matches `token_path_patterns`
-3. Status is 2xx (`status is None` is also accepted for in-flight rows
-   that haven't received a response yet)
+1. A `POST` whose URL path matches `token_path_patterns`, with status
+   2xx (`status is None` is also accepted for in-flight rows that
+   haven't received a response yet), **or**
+2. **Body-shape fallback** — any 2xx `POST` whose response body contains
+   an `access_token` / `id_token` / `refresh_token` field (top-level,
+   nested under a wrapper, or even inside a JSON string), *even when the
+   URL path did not match* `token_path_patterns`. Conservative: only
+   fires for a 2xx POST, so a generic JSON GET returning
+   `user.access_token` won't false-positive. This catches custom-IdP
+   token endpoints at non-canonical paths.
 
 Then the body / grant chooses the kind:
 
@@ -372,9 +386,11 @@ In the dashboard:
 
 ## 6 · Adding a brand-new milestone kind
 
-If the existing five kinds don't cover what you need (e.g. you want a
-"DEVICE_REGISTER" kind for AAD device-registration flows), the work
-is in three places:
+If the existing kinds (currently 13: `login`, `code`, `tokens`,
+`refresh`, `prt`, `session`, `bearer`, `ca_blocked`, `ca_reprocess`,
+`rp_reject`, `mdm_discover`, `mdm_enroll`, `mdm_checkin`) don't cover
+what you need (e.g. you want a "DEVICE_REGISTER" kind for AAD
+device-registration flows), the work is in three places:
 
 1. `backend/auth_milestones.py:classify` — emit the new tag from a
    new heuristic (read its inputs from
@@ -383,7 +399,7 @@ is in three places:
    `auth_milestones:` and accessor support in
    `backend/site_rules.py:auth_milestones_config`.
 3. `backend/debug_server.py` — add CSS for `.flow-ms-badge.<kind>`
-   (the existing block has six entries; copy one and pick a colour).
+   (the existing block has 13 entries; copy one and pick a colour).
 
 Don't forget to update `SESSIONS.md` and bump the `MINOR` version
 across `backend/main.py`, `backend/debug_server.py`, and

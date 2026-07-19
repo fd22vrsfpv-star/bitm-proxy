@@ -168,9 +168,10 @@ dashboard's Phantom tab (`:8092`, `backend/routes/phantom.py`) wraps the
 same script via `tools/phantom_runner.py` and adds two config-driven
 gates that only apply to *that* invocation path, not direct CLI use:
 `allow_phantom_join` (must be explicitly enabled; the tab is hidden and
-the route 403s otherwise) and `phantom_join_allowed_domains` (empty/
-unrestricted by default — when populated, a dashboard-triggered run is
-rejected with `{type:"denied"}` if `-d`/`domain` isn't on the list). This
+the run WebSocket sends `{type:"denied"}` then closes otherwise) and
+`phantom_join_allowed_domains` (empty/unrestricted by default — when
+populated, a dashboard-triggered run is rejected with `{type:"denied"}`
+if `-d`/`domain` isn't on the list). This
 is the safety control that lets the DEF CON RTV Lab expose Phantom Join
 to lab visitors through the dashboard without it being usable against an
 arbitrary real tenant — see `docs/DEFCON-LAB-SETUP.md` and
@@ -305,14 +306,14 @@ phantom_join_20260506_143022/
 ├── logs/
 │   ├── phantom_join_20260506_143022.log    # Full execution log
 │   └── findings_20260506_143022.json       # Structured findings (PlexTrac-ready)
-├── YOURPC-AB12C.pem                        # Phantom device certificate
-├── YOURPC-AB12C.key                        # Phantom device private key
+├── yourpc-ab12c.pem                        # Phantom device certificate (name is lowercased)
+├── yourpc-ab12c.key                        # Phantom device private key
 ├── .roadtools_auth                         # DRS token cache
 ├── .roadtools_auth_device                  # Device-authenticated Graph token
 ├── .roadtools_auth_msgraph                 # MS Graph token
 ├── roadtx.prt                              # Primary Refresh Token
 ├── roadrecon.db                            # Full tenant enumeration database
-├── YOURPC-AB12C.rtdevice                   # Intune device state (if --intune)
+├── yourpc-ab12c.rtdevice                   # Intune device state (if --intune)
 └── output/
     └── userapps/                           # Downloaded .intunewin packages (if --intune)
         ├── App1.intunewin
@@ -330,7 +331,7 @@ The `findings_*.json` file contains structured findings suitable for import into
     "severity": "CRITICAL",
     "phase": 3,
     "title": "Phantom Device Registered",
-    "detail": "Successfully registered phantom device 'YOURPC-AB12C' in Azure AD...",
+    "detail": "Successfully registered phantom device 'yourpc-ab12c' in Azure AD...",
     "mitre": "T1098.005"
   }
 ]
@@ -360,30 +361,6 @@ Phase 2 (DRS token acquisition) and optionally Phase 8 (Intune enrollment token)
 4. Complete MFA if prompted (the resulting token will carry the MFA claim, which is required for device registration)
 
 The script waits up to 120 seconds for the flow to complete before timing out.
-
----
-
-## Companion Tools
-
-This repository includes two additional scripts from the broader Power Platform red team toolkit:
-
-### powerapps_enum.py
-
-Automated enumeration of Power Platform environments, PowerApps, connections, Power Automate flows, custom connectors, and DLP policies. Identifies high-value targets like broadly shared apps with privileged connectors and open environments.
-
-```bash
-python powerapps_enum.py --token eyJ0eXAi... --output-format json -o results.json
-```
-
-### flow_analyzer.py
-
-Deep analysis of Power Automate flow definitions. Recursively inspects actions for embedded secrets, hardcoded bearer tokens, HTTP actions with auth headers, and connections to escalation-capable connectors.
-
-```bash
-python flow_analyzer.py --env {environment_guid} --token eyJ0eXAi... -o flow_findings.json
-```
-
-Both tools accept tokens produced by `phantom_join.py` — the device-authenticated Graph tokens from Phase 5 work directly.
 
 ---
 
@@ -466,7 +443,7 @@ Common causes: the DRS token expired between phases (re-run from Phase 2), the d
 Large tenants (50k+ users) can take 10-15 minutes for full enumeration. The script sets a 600-second timeout. For very large tenants, run ROADrecon manually with custom flags:
 
 ```bash
-roadrecon gather --tokens-file .roadtools_auth_device -d roadrecon.db
+roadrecon gather --tokenfile .roadtools_auth_device -d roadrecon.db
 ```
 
 ### Phase 8 Intune enrollment fails
