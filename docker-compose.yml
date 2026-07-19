@@ -68,6 +68,11 @@ services:
       # nginx) for operator convenience — always loopback-only, not tied
       # to BIND_HOST, so --public/-Public never widens this one.
       - "127.0.0.1:8092:8092"
+      # RAG Scan Stack API (backend/rag_api.py) — published to localhost so
+      # a Burp extension / external tooling on the host can connect to it.
+      # Loopback-only and NOT tied to BIND_HOST on purpose: the RAG API has
+      # no auth of its own, so --public/-Public must never widen it.
+      - "127.0.0.1:8000:8000"
     # :8091 and the auth proxy (:3128) are still not published at all —
     # nginx reaches :8091 over the compose network by service name
     # ("app"); :3128 is used internally by the app's own Playwright
