@@ -3,7 +3,7 @@
 Operational runbook for running `bitm-proxy` as a hands-on lab: a
 publicly-reachable, self-serve version of the "Your Passkeys Won't Save You"
 demo, alongside the option for visitors to self-host the same Docker image
-against their own tenant. See `docs/DEFCON-RTV-2025-slides.html`/`.pptx` for
+against their own tenant. See `docs/Grapnel-passkeys-RTV.html`/`.pptx` for
 the talk itself; this doc is the lab infrastructure, not the talk content.
 
 This is a one-time event runbook, not permanent architecture — see
