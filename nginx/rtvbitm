@@ -160,6 +160,15 @@ server {
         proxy_set_header   X-Forwarded-For   $remote_addr;
         proxy_set_header   X-Forwarded-Proto $scheme;
     }
+
+    location = /api/test-token {
+        # Dashboard-exclusive (backend/debug_server.py) — v1+v2 /token
+        # comparison, same reason as /api/test-ropc above.
+        proxy_pass         http://app:8092/api/test-token;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
     location = /api/create-ado-pat {
         # Dashboard-exclusive (backend/debug_server.py), same reason as
         # /api/test-graph above — without this it falls to the general
