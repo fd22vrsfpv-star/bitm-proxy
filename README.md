@@ -434,3 +434,64 @@ All device events log to the `devices` category — filter the All Logs
 view in the dashboard or grep `journalctl -u bitm-proxy -g DEVICE_`.
 
 Mechanism + storage in `docs/SESSIONS.md` → *Sessions → Device profile*.
+
+## Credits
+
+This project is glue around the work of others who did the hard part
+first. The Azure/Entra attack chain in particular stands on:
+
+**Offensive tooling**
+
+- **[ROADtools](https://github.com/dirkjanm/ROADtools)** — Dirk-jan
+  Mollema. `roadlib` / `roadtx` / `roadrecon` power the entire Phantom
+  Join chain: device-code → DRS, phantom device registration, PRT
+  minting, and tenant enumeration.
+- **[AbuseAzureAPIPermissions](https://github.com/hagrid29/AbuseAzureAPIPermissions)**
+  — Hagrid29. Vendored under `tools/AbuseAzureAPIPermissions/`; the
+  `Get-AAA*` Graph recon/abuse functions behind the dashboard's AAA
+  runner.
+- **[AADInternals](https://github.com/Gerenios/AADInternals)** — Dr.
+  Nestori Syynimaa (@DrAzureAD). Bundled inside AbuseAzureAPIPermissions
+  (the `AADIntAccessToken/` module) for its token / WS-Trust primitives.
+- **[TokenTacticsV2](https://github.com/f-bader/TokenTacticsV2)** —
+  Fabian Bader. Prior art for token manipulation (see
+  `tools/README_Phantom.md`).
+
+**Research / prior art**
+
+- **Cyderes "Howler Cell"** research — *"One Password, No Device, Full
+  Tenant"* — the phantom-join Conditional Access bypass technique
+  `tools/phantom_join.py` is based on.
+- **Microsoft** — Storm-2372 device-code phishing analysis; and
+  **[MITRE ATT&CK](https://attack.mitre.org/)** for the technique mapping.
+
+**Browser / proxy / TLS**
+
+- **[Playwright](https://playwright.dev)** (Microsoft) — hosted browser
+  sessions.
+- **[curl_cffi](https://github.com/lexiforest/curl_cffi)** +
+  **[curl-impersonate](https://github.com/lwthiker/curl-impersonate)** —
+  JA3/JA4 TLS-fingerprint impersonation on the `:3128` upstream leg.
+
+**Frameworks & runtime**
+
+- Backend: **[FastAPI](https://fastapi.tiangolo.com)**, **Uvicorn** /
+  **Starlette** / **[httpx](https://www.python-httpx.org)** (Encode),
+  **Pydantic**, **[cryptography](https://cryptography.io)** (PyCA),
+  **PyYAML**, **msgpack**.
+- Frontend: **React** (Meta), **Vite**, **[TanStack
+  Query](https://tanstack.com/query)**, **[Tailwind
+  CSS](https://tailwindcss.com)**, **[lucide-react](https://lucide.dev)**.
+- Infra: **Docker** / **Docker Compose**, **nginx**, **PowerShell** +
+  the **Az.Accounts** module (Microsoft), and optional local-LLM flow
+  analysis via **[Ollama](https://ollama.com)** with open models
+  (Llama · Gemma · Qwen).
+
+**Integrations**
+
+- The `burp-extension/RagScanBridge.py` Burp extension is adapted from
+  the **RAG Scan Stack** project's extension of the same name.
+
+All third-party tools remain the property of their respective authors
+and are used here under their own licenses. This project is provided for
+authorized security testing and research only.
