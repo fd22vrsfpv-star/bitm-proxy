@@ -377,11 +377,15 @@ here to match exactly.
   → select the downloaded file. Default API URL is
   `http://localhost:8000` (plain HTTP — the built-in RAG API doesn't
   terminate TLS itself).
-- **Not supported** against the built-in RAG API: the extension's SOCKS
-  tunnel-node proxy routing and Follow-Up Queue tabs call `/nodes` and
-  `/burp-queue`, which are RAG Scan Stack-specific infrastructure this
-  project doesn't implement — using them here just logs a connection
-  error, not a crash.
+- **Follow-Up Queue** (`/burp-queue`) is implemented: it surfaces the
+  captured login-flow findings as queue items, so the extension's
+  Follow-Up Queue tab can pull a captured flow into Burp as a scan issue
+  (with request/response). `POST /burp-queue/mark-imported` is accepted
+  as a no-op (findings stay re-importable).
+- **SOCKS tunnel-node proxy routing** (`/nodes`) returns an empty node
+  list — the built-in API has no tunnel infrastructure, so the Proxy tab
+  shows "0 online nodes" rather than erroring. That routing feature is
+  RAG Scan Stack-specific and not implemented here.
 
 ## Architecture
 

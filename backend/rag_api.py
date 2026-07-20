@@ -193,3 +193,53 @@ def import_findings(findings: list, source: str = "external") -> dict:
 async def import_findings_exchange(body: dict):
     return import_findings(body.get("findings", []),
                            body.get("source", "external"))
+
+
+# ── Burp extension: Follow-Up Queue + tunnel nodes ──────────────────────────
+# The Burp extension (burp-extension/RagScanBridge.py) polls /burp-queue for
+# items to pull into Burp and /nodes for SOCKS tunnel routing. RAG Scan Stack
+# implements these against its own infrastructure; here we surface the captured
+# findings as the queue (so the operator can import a captured login flow into
+# Burp as an issue) and return an empty node list (no tunnel infra in the
+# built-in API). Without these the extension's Follow-Up Queue / Proxy tabs
+# just 404 and log errors.
+
+def _finding_to_queue_item(f: dict, idx: int) -> dict:
+    ev = f.get("evidence")
+    if isinstance(ev, list):
+        ev = "\n".join(str(x) for x in ev)
+    return {
+        "id": f.get("session_id") or f.get("name") or f"finding-{idx}",
+        "title": f.get("title") or f.get("name") or "finding",
+        "severity": f.get("severity") or "info",
+        "target": f.get("url") or "",
+        "url": f.get("url") or "",
+        "description": f.get("description") or "",
+        "evidence": ev or "",
+        "request_raw": f.get("request_raw") or "",
+        "response_raw": f.get("response_raw") or "",
+        "finding_source": f.get("source") or "bitm-proxy",
+        "status": "pending",
+    }
+
+
+@app.get("/burp-queue")
+async def burp_queue(status: str = "pending", limit: int = Query(500, ge=1, le=5000)):
+    items = [_finding_to_queue_item(f, i)
+             for i, f in enumerate(_all_findings()[:limit])]
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/burp-queue/mark-imported")
+async def burp_queue_mark_imported(body: dict):
+    # No per-item imported-state tracking in the built-in API — accept and
+    # ack so the extension's post-import call succeeds. Findings remain
+    # queryable (re-importable) by design.
+    ids = body.get("ids", []) or []
+    return {"ok": True, "marked": len(ids)}
+
+
+@app.get("/nodes")
+async def nodes():
+    # No tunnel-node / SOCKS-routing infrastructure in the built-in RAG API.
+    return {"nodes": []}
