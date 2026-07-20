@@ -131,6 +131,11 @@ def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
     first = entries[0] if entries else {}
     summary_lines = [_summarize_entry(e) for e in entries]
     key = _key_elements(entries)
+    # Flows that captured session material (tokens / cookies / auth headers)
+    # get a real severity so they survive the Burp extension's default
+    # "hide recon-only" filter and import as issues; pure navigation stays info.
+    _severity = ("low" if (key.get("token_responses") or key.get("set_cookies")
+                           or key.get("auth_headers")) else "info")
 
     description_parts = [
         f"Captured login flow for {host} (session {session_id}).",
@@ -170,7 +175,7 @@ def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
         "name": f"trace_flow_for_{host}",
         "title": f"trace_flow_for_{host}",
         "url": first.get("url") or f"https://{host}/",
-        "severity": "info",
+        "severity": _severity,
         "confidence": "firm",
         "source": "bitm-proxy",
         "evidence": ["\n".join(evidence_parts)],
