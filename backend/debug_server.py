@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.31.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.31.1")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -4654,20 +4654,30 @@ function jumpToSeq(seq){
 // log entry with timing so every tool run shows up in All Logs under
 // the `tool` category, and we get a real audit trail of user actions.
 const _toolButtonStates = {};    // key -> { btn, origText, origBg, startedAt }
+const TOOL_WATCHDOG_MS = 60000;
 function _toolStart(key, label, sid){
   const btn = (window.event && window.event.target) || null;
   const started = Date.now();
-  _toolButtonStates[key] = btn ? {
+  const st = btn ? {
     btn,
     origText: btn.textContent,
     origDisabled: btn.disabled,
     startedAt: started,
   } : { startedAt: started };
+  // Safety net: if no matching _toolEnd arrives (lost WS message, dropped
+  // response), auto-reset the button instead of spinning forever.
+  st.watchdog = setTimeout(() => {
+    if(_toolButtonStates[key] === st){
+      _toolEnd(key, false, 'timed out — no response (dashboard connection may be down; reload the page)');
+    }
+  }, TOOL_WATCHDOG_MS);
+  _toolButtonStates[key] = st;
   if(btn){btn.textContent = 'Running…'; btn.disabled = true; btn.classList.add('running')}
   _clientLog('info', 'tool', `▶ ${label}${sid?' sid='+sid.slice(-10):''}`, sid||'');
 }
 function _toolEnd(key, ok, summary){
   const s = _toolButtonStates[key]; delete _toolButtonStates[key];
+  if(s && s.watchdog) clearTimeout(s.watchdog);
   if(s && s.btn){
     s.btn.textContent = s.origText;
     s.btn.disabled = !!s.origDisabled;
@@ -4705,7 +4715,10 @@ function submitFlowToRag(){
   const payload={cmd:'submit_flow_to_rag',session_id:flowSelectedSid};
   if(picks.length)payload.seqs=picks;
   else{payload.start_seq=m.start;payload.end_seq=m.end}
-  send(payload);
+  if(!send(payload)){
+    _toolEnd('Send to RAG', false, 'not sent — dashboard WebSocket is disconnected');
+    alert('Dashboard is not connected (WebSocket down). Reload the page and try again.');
+  }
 }
 function analyzeFlow(){
   if(!flowSelectedSid){alert('Select a session first');return}
