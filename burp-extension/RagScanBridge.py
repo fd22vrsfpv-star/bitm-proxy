@@ -144,7 +144,10 @@ class BurpExtender(IBurpExtender, ITab):
         row3 = JPanel(FlowLayout(FlowLayout.LEFT))
         row3.add(JLabel("Sources:"))
         self._src_checks = {}
-        for name, default in [("zap", True), ("nikto", True), ("nuclei", True),
+        # "bitm-proxy" is this proxy's own captured-flow findings — checked by
+        # default so Import/Preview don't silently filter them out (the source
+        # filter drops any finding whose source isn't in the checked set).
+        for name, default in [("bitm-proxy", True), ("zap", True), ("nikto", True), ("nuclei", True),
                                ("nmap", True), ("playwright", True), ("ssh-audit", True), ("burp", False)]:
             cb = JCheckBox(name, default)
             self._src_checks[name] = cb
