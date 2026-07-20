@@ -670,6 +670,16 @@ to `tokens[]` on the credential record (with
 `source_url=Get-AAATokenFromAzLogin`) so the existing AAA runner can use
 them downstream.
 
+**Device-code login (MFA-capable alternative, 1.35.0)** — the AAA login
+panel has a **Method** selector: *Password* (Connect-AzAccount, above) or
+*Device code*. Device code runs the OAuth2 device-authorization grant for a
+Graph scope via `POST /api/ado-devicecode/{start,poll}` — the operator
+completes sign-in (with MFA) at `microsoft.com/devicelogin` and the resulting
+Graph token is stashed on the credential record via `POST /api/aaa/store-token`
+(`aaa_runner.persist_captured_token`). Use this when Connect-AzAccount is
+CA/MFA-blocked (`AADSTS50076` / "user interaction is required"): unlike the
+password path it needs no `Az.Accounts` module and satisfies MFA.
+
 ---
 
 ## ROPC test (Resource Owner Password Credentials)
@@ -726,6 +736,17 @@ A **Method** selector (1.33.0) picks how the ADO-audience token is acquired:
 (interactive OAuth2 device-authorization grant — satisfies MFA/CA, the path
 that works when ROPC is blocked), or **Captured token** (paste an existing
 ADO-audience token). All three converge on the same PAT creation.
+
+The token must have the **Azure DevOps audience** —
+`aud = 499b84ac-1321-427f-aa17-267ca6975798` (the ADO first-party resource);
+a Graph token (`aud = 00000003-…` / `graph.microsoft.com`) is rejected with
+401. Verify any token's `aud` with the dashboard's **Decode JWTs** button.
+Where to get one: the **Device code** / **ROPC** methods here request the ADO
+scope for you (easiest — prefer Device code on an MFA tenant, so the "Captured
+token" field is only for a token you already hold); a captured `dev.azure.com`
+BITM session; a phantom PRT exchange
+(`roadtx prtauth -f roadtx.prt -r 499b84ac-1321-427f-aa17-267ca6975798`); or
+`Get-AzAccessToken -ResourceUrl 499b84ac-1321-427f-aa17-267ca6975798`.
 
 | Piece | Where |
 |---|---|

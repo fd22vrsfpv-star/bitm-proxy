@@ -307,6 +307,40 @@ _AZ_MODULE_MISSING_RE = re.compile(
     r"Connect-AzAccount.*not recognized", re.IGNORECASE | re.DOTALL)
 
 
+async def persist_captured_token(site_id: str, access_token: str,
+                                 source_url: str = "device-code",
+                                 tenant_id: str = "") -> bool:
+    """Append a captured access token to a credential record's `tokens[]` so
+    it shows up in the AAA runner's Token dropdown. Shared by the
+    Connect-AzAccount path and the device-code path. Returns True on success."""
+    if not site_id or not access_token:
+        return False
+    try:
+        from backend.store import JsonStore
+        store = JsonStore("credentials")
+        entry = {"access_token": access_token, "source_url": source_url,
+                 "captured_at": int(time.time()), "tenant_id": tenant_id}
+
+        def _append(rec: dict) -> dict:
+            tokens = rec.get("tokens")
+            if not isinstance(tokens, list):
+                tokens = []
+            tokens.append(entry)
+            rec["tokens"] = tokens
+            return rec
+
+        await store.update(site_id, _append, default={"site_id": site_id})
+        try:
+            from backend.shared import notify_sites_changed
+            notify_sites_changed()
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        append_log("warn", "aaa_runner", f"[{site_id}] persist token failed: {e}")
+        return False
+
+
 async def acquire_token_via_az_login(
     site_id: str,
     user: str,
@@ -467,34 +501,8 @@ async def acquire_token_via_az_login(
 
     persisted = False
     if token and persist:
-        try:
-            from backend.store import JsonStore
-            store = JsonStore("credentials")
-            new_entry = {
-                "access_token": token,
-                "source_url": "Get-AAATokenFromAzLogin",
-                "captured_at": int(time.time()),
-                "tenant_id": tenant_id,
-            }
-
-            def _append(rec: dict) -> dict:
-                tokens = rec.get("tokens")
-                if not isinstance(tokens, list):
-                    tokens = []
-                tokens.append(new_entry)
-                rec["tokens"] = tokens
-                return rec
-
-            await store.update(site_id, _append, default={"site_id": site_id})
-            persisted = True
-            try:
-                from backend.shared import notify_sites_changed
-                notify_sites_changed()
-            except Exception:
-                pass
-        except Exception as e:
-            append_log("warn", "aaa_runner",
-                       f"[{site_id}] persist token failed: {e}")
+        persisted = await persist_captured_token(
+            site_id, token, "Get-AAATokenFromAzLogin", tenant_id)
 
     append_log("info" if exit_code == 0 else "warn", "aaa_runner",
                f"[{site_id}] Get-AAATokenFromAzLogin exit={exit_code} "

