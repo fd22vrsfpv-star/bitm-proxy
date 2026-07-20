@@ -419,7 +419,7 @@ a faint left rule.
 | Key | Default | Purpose |
 |---|---|---|
 | `default_login_url` | `https://myapps.microsoft.com` | URL opened when a session is started with no explicit target. |
-| `login_urls` | 6 presets | Preset buttons in the URL picker. |
+| `login_urls` | 6 presets | Preset buttons in the URL picker. A broader reference list of Microsoft Entra-gated sign-in surfaces (end-user, admin, developer, auth-infrastructure) lives in `docs/microsoft_entra_login_sites.xlsx` — all authenticate through the same Entra IdP, so any is a candidate target. |
 | `auto_login_email` | `""` | Email auto-filled into login pages. Also drives Slack notification routing — when blank, captures/login-starts/keepalives are tagged "unknown user" and route to `slack_routine_webhook` if set. |
 | `upstream_proxy` | `false` | Route Playwright through an upstream HTTP proxy. |
 | `upstream_proxy_host` | `127.0.0.1:3128` | The upstream proxy endpoint. |
@@ -427,6 +427,7 @@ a faint left rule.
 | `default_tenant_id` | `""` | Prefills the tenant field in the ROPC / `/token` / ADO-PAT / AAA tools when set. |
 | `allow_drs_replay` | `false` | Gates the DRS-replay feature (`/api/devices/drs-analyze-token`, `/api/devices/drs-register-from-token`, `/api/devices/drs-credentials*`) — register a device directly from a captured DRS token. |
 | `prefer_push` | `false` | Auto-click MS's "Approve a request on my Microsoft Authenticator app" tile (`[data-value="PhoneAppNotification"]`) on the sign-in method picker. Use when MFA is configured with Authenticator push and the operator has the phone. |
+| *(TAP → password, always-on)* | — | On MS's "Enter Temporary Access Pass" screen the hosted session prefers the password option when the account still offers it (a human can complete a password in the BITM session; a TAP is an out-of-band code we don't hold). If no password option is available it leaves the TAP prompt and proceeds. No config key — a no-op unless the TAP screen renders; logged under `auth`. (1.29.0) |
 | `mfa_dead_end_show_qr` | `false` | Operator-launch-only (`v1.19.0+`). On dead-end (only passkey-class tiles in the picker), click the FIDO/passkey tile so MS renders its passkey UI / cross-device QR in the canvas. Diagnostic — BLE pairing from a remote server can't complete. |
 | `mfa_dead_end_device_code_enabled` | `false` | Operator-launch-only (`v1.19.0+`). On dead-end, navigate the Playwright session to `mfa_dead_end_device_code_url`. Tests token issuance via the OAuth 2.0 device-code grant. Skipped if the QR click already advanced the page. |
 | `mfa_dead_end_device_code_url` | `https://microsoft.com/devicelogin` | URL the device-code fallback navigates to. Override for tenant-specific or custom-app endpoints. |
@@ -720,12 +721,19 @@ credential material that survives the victim's password reset and usually
 sits outside the CA/MFA re-evaluation that gates interactive sign-in, the
 same class of coverage gap as ROPC and Phantom Join.
 
+A **Method** selector (1.33.0) picks how the ADO-audience token is acquired:
+**ROPC** (default — password grant; fails on an MFA tenant), **Device code**
+(interactive OAuth2 device-authorization grant — satisfies MFA/CA, the path
+that works when ROPC is blocked), or **Captured token** (paste an existing
+ADO-audience token). All three converge on the same PAT creation.
+
 | Piece | Where |
 |---|---|
-| Endpoint | `POST /api/create-ado-pat` (`backend/debug_server.py`) |
-| UI | `renderAdoPatPanel()` renders the toggle + form; `adoPatToggle()`/`adoPatRun()` drive it |
-| Shared token step | `_ropc_grant()` — the same helper `/api/test-ropc` uses, so a blocked grant surfaces the AADSTS code identically |
-| nginx | `location = /api/create-ado-pat` in `nginx/rtvbitm` (dashboard-exclusive `:8092` route — see the CLAUDE.md rule) |
+| Endpoint | `POST /api/create-ado-pat` (accepts `username`/`password`, or `access_token`) |
+| Device-code | `POST /api/ado-devicecode/start` + `POST /api/ado-devicecode/poll` — start returns the `user_code`/`verification_uri`; the panel polls on the server interval, then feeds the token into create-ado-pat. Uses the Azure CLI public client (pre-consented for the ADO resource). |
+| UI | `renderAdoPatPanel()` + `adoPatMethodChange()`/`adoPatGo()`/`_adoPatCreate()`/`adoPatDeviceCode()` |
+| Shared token step (ROPC) | `_ropc_grant()` — same helper `/api/test-ropc` uses, so a blocked grant surfaces the AADSTS code identically |
+| nginx | `location = /api/create-ado-pat` and `location /api/ado-devicecode/` in `nginx/rtvbitm` (dashboard-exclusive `:8092` routes — see the CLAUDE.md rule) |
 | Gate | `enable_token_testing` (creates a real AAD sign-in log entry **and** a real, listable PAT in the target org) |
 
 Body: `{username?, password?, tenant_id?, access_token?, client_id?,
