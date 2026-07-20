@@ -404,6 +404,31 @@ If you're using this tool during an engagement, these are the controls that brea
 
 ## Troubleshooting
 
+### Decision flow — what to try, and where you are
+
+The log prints a `PHASE N: …` header as each phase starts and a
+`[CRITICAL]`/`[HIGH]` finding as each succeeds — the **last finding you see is
+how far the chain got**. Use this to locate yourself, then follow the branch:
+
+```mermaid
+flowchart TD
+    START([run phantom_join.py]) --> P1["Phase 1 · Initial auth probe"]
+    P1 -->|"AADSTS53003 / 50076 — blocked (expected)"| P2["Phase 2 · Device code → DRS token"]
+    P1 -->|"unexpectedly succeeds"| WEAK["direct auth ungated —<br/>tenant CA is weak; note it, continue"]
+    WEAK --> P2
+    P2 -->|"DRS token obtained"| P34["Phase 3-4 · Register phantom device → mint PRT<br/>(PRT is password-minted: amr pwd+rsa, NO mfa)"]
+    P2 -->|"timeout / no token"| FIX2["Complete the device code in a browser within 120s WITH MFA.<br/>Check phantom_join_allowed_domains + the tenant domain."]
+    FIX2 --> P2
+    P34 --> P5{"Phase 5 · PRT → Graph exchange (roadtx prtauth)"}
+    P5 -->|"success"| P67["Phase 6-7 · roadrecon gather + CA policy analysis"]
+    P67 --> DONE([chain complete])
+    P5 -->|"AADSTS50076 / interaction_required"| ENRICH["roadtx prtenrich -f roadtx.prt — complete MFA once,<br/>then re-run: --start-phase 5"]
+    ENRICH --> P5
+    P5 -->|"still blocked after enrich"| STOP["CA covers this grant with MFA →<br/>hardened-tenant stopping point (a good finding)"]
+```
+
+*(Renders as a flowchart on GitHub; the same paths are written out below.)*
+
 ### "roadtx: command not found"
 
 ROADtools isn't installed or isn't on your PATH:
@@ -437,6 +462,36 @@ python phantom_join.py ... --device-name DESKTOP-XYZ99
 ### Phase 4 PRT request fails
 
 Common causes: the DRS token expired between phases (re-run from Phase 2), the device certificate is corrupted, or a CA policy blocks PRT issuance. Check the AADSTS error code in the log.
+
+### Phase 5 fails with AADSTS50076 (MFA required) — the common stopping point
+
+This is the failure you'll hit most often, and it's frequently the CA policy
+working **as intended**, not a bug. The PRT minted in Phase 4 uses username +
+password, so it carries `amr: [pwd, rsa]` — device-backed, but with **no `mfa`
+claim**. If the target resource's Conditional Access requires MFA (or an
+authentication strength), the exchange is refused:
+
+```
+AADSTS50076 … you must use multi-factor authentication … "suberror":"basic_action"
+```
+
+Enrich the PRT with an interactive MFA step, then re-run the exchange:
+
+```bash
+roadtx prtenrich -f roadtx.prt          # complete MFA once (TAP / Authenticator)
+python phantom_join.py ... --start-phase 5
+```
+
+If it is **still** blocked after enrichment, the tenant genuinely covers the
+device-code / PRT grant with MFA — that's the hardened-tenant outcome and a
+legitimate finding on its own: the bypass only completes where that grant is
+left uncovered.
+
+**Phases 6 and 7 depend on Phase 5.** When Phase 5 produces no
+`.roadtools_auth_device`, the runner skips enumeration and policy analysis with
+a `[!] Skipping …` message (not a traceback) even under `--force` — so a wall of
+`FileNotFoundError` / "database not found" you may have seen from older runs is
+gone. Fix Phase 5 first, then resume with `--start-phase 5`.
 
 ### Phase 6 enumeration is slow
 
