@@ -179,6 +179,15 @@ server {
         proxy_set_header   X-Forwarded-For   $remote_addr;
         proxy_set_header   X-Forwarded-Proto $scheme;
     }
+    location /api/ado-devicecode/ {
+        # Dashboard-exclusive (backend/debug_server.py) — device-code start/poll
+        # for the ADO PAT flow. Prefix match covers both /start and /poll; same
+        # reason as /api/create-ado-pat above (avoid :8091's SPA catch-all).
+        proxy_pass         http://app:8092;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
     location = /api/rag/burp-extension/download {
         # Dashboard-exclusive (backend/debug_server.py) — without this,
         # the general /api/ block below sends it to :8091, whose SPA

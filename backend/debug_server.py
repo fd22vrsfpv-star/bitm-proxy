@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.32.4")
+app = FastAPI(title="BITM Proxy Debug", version="1.33.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1465,6 +1465,79 @@ _ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 # mint an ADO-resource token via ROPC for a lab account (the Auth Broker
 # client used for Graph ROPC does not carry ADO delegated permission).
 _AZ_CLI_CLIENT_ID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+
+
+@app.post("/api/ado-devicecode/start")
+async def api_ado_devicecode_start(body: dict):
+    """Begin an OAuth2 device-authorization grant for an Azure DevOps-audience
+    token. Returns the user_code + verification_uri to show the operator and
+    the device_code to poll with. Unlike ROPC, device code is interactive, so
+    it satisfies MFA / Conditional Access — the operator completes sign-in
+    (incl. MFA) in a browser, then /api/ado-devicecode/poll picks up the token.
+    Uses the Azure CLI public client (pre-consented for the ADO resource)."""
+    from backend.shared import get_config_value as _gcv
+    if not _gcv("enable_token_testing", True):
+        return {"error": "Token testing disabled (enable_token_testing=false). "
+                "Enable in Configuration."}
+    import httpx
+    tenant = (body.get("tenant_id") or "organizations").strip()
+    client_id = (body.get("client_id") or _AZ_CLI_CLIENT_ID).strip()
+    scope = (body.get("scope") or f"{_ADO_RESOURCE_ID}/.default offline_access").strip()
+    url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode"
+    try:
+        async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
+            r = await client.post(url, data={"client_id": client_id, "scope": scope})
+            d = r.json()
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if not d.get("device_code"):
+        return {"error": d.get("error_description") or d.get("error")
+                or "device code request failed"}
+    append_log("info", "auth_proxy",
+               f"ADO_DEVICECODE_START tenant={tenant} client_id={client_id}")
+    return {"ok": True, "device_code": d["device_code"],
+            "user_code": d.get("user_code"),
+            "verification_uri": d.get("verification_uri") or d.get("verification_url"),
+            "expires_in": d.get("expires_in", 900),
+            "interval": d.get("interval", 5),
+            "tenant_id": tenant, "client_id": client_id}
+
+
+@app.post("/api/ado-devicecode/poll")
+async def api_ado_devicecode_poll(body: dict):
+    """Poll the token endpoint once for a pending device-code grant. Returns
+    {ok, access_token} on success, {pending: true} while the operator hasn't
+    finished (authorization_pending / slow_down), or {error, terminal} on a
+    terminal error (expired / declined). The frontend calls this on `interval`."""
+    from backend.shared import get_config_value as _gcv
+    if not _gcv("enable_token_testing", True):
+        return {"error": "Token testing disabled (enable_token_testing=false)."}
+    import re as _re
+    import httpx
+    tenant = (body.get("tenant_id") or "organizations").strip()
+    client_id = (body.get("client_id") or _AZ_CLI_CLIENT_ID).strip()
+    device_code = (body.get("device_code") or "").strip()
+    if not device_code:
+        return {"error": "device_code required"}
+    url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+    data = {"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": client_id, "device_code": device_code}
+    try:
+        async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
+            r = await client.post(url, data=data)
+            d = r.json()
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if d.get("access_token"):
+        append_log("info", "auth_proxy",
+                   f"ADO_DEVICECODE_TOKEN tenant={tenant} — device-code grant completed")
+        return {"ok": True, "access_token": d["access_token"]}
+    err = d.get("error") or ""
+    if err in ("authorization_pending", "slow_down"):
+        return {"pending": True, "slow_down": err == "slow_down"}
+    m = _re.search(r"AADSTS\d+", d.get("error_description", "") or "")
+    return {"error": d.get("error_description") or err or "device code failed",
+            "aadsts_code": m.group(0) if m else "", "terminal": True}
 
 
 @app.post("/api/create-ado-pat")
@@ -7211,13 +7284,32 @@ function renderAdoPatPanel(d,siteId){
               title="ROPC to an Azure DevOps token, then mint a long-lived Personal Access Token — persistence that outlives password resets and is usually outside CA/MFA">Create ADO PAT…</button>
     </div>
     <div id="adopat-${siteId}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #3f1d1d">
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-        <label style="color:#94a3b8;font-size:13px;min-width:64px">User</label>
-        <input id="adopat-user-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(guessUser)}">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <label style="color:#94a3b8;font-size:13px;min-width:64px">Method</label>
+        <select id="adopat-method-${siteId}" class="cfg-input" style="font-size:13px;flex:1;min-width:260px" onchange="adoPatMethodChange('${siteId}')">
+          <option value="ropc" selected>ROPC — password grant (current default)</option>
+          <option value="devicecode">Device code — interactive, satisfies MFA</option>
+          <option value="captured">Captured token — paste an ADO-audience token</option>
+        </select>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-        <label style="color:#94a3b8;font-size:13px;min-width:64px">Password</label>
-        <input id="adopat-pass-${siteId}" type="password" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="paste — never logged" value="${esc(guessPass||'')}">
+      <div id="adopat-ropc-${siteId}">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+          <label style="color:#94a3b8;font-size:13px;min-width:64px">User</label>
+          <input id="adopat-user-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" value="${esc(guessUser)}">
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+          <label style="color:#94a3b8;font-size:13px;min-width:64px">Password</label>
+          <input id="adopat-pass-${siteId}" type="password" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="paste — never logged" value="${esc(guessPass||'')}">
+        </div>
+      </div>
+      <div id="adopat-captured-${siteId}" style="display:none">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+          <label style="color:#94a3b8;font-size:13px;min-width:64px">Token</label>
+          <input id="adopat-token-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="ADO-audience (499b84ac…) access token — from the Token dropdown or a capture">
+        </div>
+      </div>
+      <div id="adopat-dc-${siteId}" style="display:none;color:#78859b;font-size:12px;margin-bottom:6px">
+        Click <b>Start device code</b> — you'll get a code to enter at microsoft.com/devicelogin. Completing sign-in there (with MFA) yields the ADO token, then the PAT is minted automatically. This is the path that works when ROPC is CA/MFA-blocked.
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
         <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
@@ -7233,10 +7325,10 @@ function renderAdoPatPanel(d,siteId){
         <label style="color:#94a3b8;font-size:13px;margin-left:6px">Valid days</label>
         <input id="adopat-days-${siteId}" class="cfg-input" type="number" min="1" max="365" style="width:72px;font-size:13px" value="90">
         <label style="color:#94a3b8;font-size:13px;margin-left:6px;display:flex;align-items:center;gap:4px" title="allOrgs=true issues a PAT valid against every org the identity can reach"><input type="checkbox" id="adopat-allorgs-${siteId}"> all orgs</label>
-        <button class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="adoPatRun('${siteId}')">▶ Create</button>
+        <button id="adopat-go-${siteId}" class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="adoPatGo('${siteId}')">▶ Create</button>
       </div>
       <div style="color:#78859b;font-size:11px;margin-bottom:6px">
-        ROPC → Azure DevOps token (${esc('499b84ac')}…) → POST /_apis/tokens/pats. Creates a real, listable PAT plus an Azure AD sign-in log entry.
+        Acquires an Azure DevOps token (${esc('499b84ac')}…) by the selected method → POST /_apis/tokens/pats. Creates a real, listable PAT plus an Azure AD sign-in log entry.
         Durable credential — survives password reset, usually outside CA/MFA. Revoke from ADO → User settings → Personal access tokens when done.
       </div>
       <div id="adopat-result-${siteId}" style="font-size:13px"></div>
@@ -8102,32 +8194,37 @@ function adoPatToggle(siteId){
     document.getElementById('adopat-pass-'+siteId)?.focus();
   }
 }
-async function adoPatRun(siteId){
-  const user=(document.getElementById('adopat-user-'+siteId)?.value||'').trim();
-  const pass=document.getElementById('adopat-pass-'+siteId)?.value||'';
+function adoPatMethodChange(siteId){
+  const m=document.getElementById('adopat-method-'+siteId).value;
+  const show=(id,on)=>{const e=document.getElementById(id);if(e)e.style.display=on?'':'none'};
+  show('adopat-ropc-'+siteId, m==='ropc');
+  show('adopat-captured-'+siteId, m==='captured');
+  show('adopat-dc-'+siteId, m==='devicecode');
+  const btn=document.getElementById('adopat-go-'+siteId);
+  if(btn) btn.textContent = (m==='devicecode') ? '▶ Start device code' : '▶ Create';
+}
+// Shared: gather the PAT options + creds, POST /api/create-ado-pat, render.
+async function _adoPatCreate(siteId, creds, statusMsg){
+  const out=document.getElementById('adopat-result-'+siteId);
   const tid=(document.getElementById('adopat-tid-'+siteId)?.value||'').trim()||'organizations';
   const org=(document.getElementById('adopat-org-'+siteId)?.value||'').trim();
   const name=(document.getElementById('adopat-name-'+siteId)?.value||'').trim()||'bitm-proxy';
   const scope=(document.getElementById('adopat-scope-'+siteId)?.value||'').trim()||'app_token';
   const days=parseInt(document.getElementById('adopat-days-'+siteId)?.value||'90',10)||90;
   const allOrgs=!!document.getElementById('adopat-allorgs-'+siteId)?.checked;
-  const out=document.getElementById('adopat-result-'+siteId);
-  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
-  out.innerHTML='<div style="color:#94a3b8">ROPC → ADO token → discover org → create PAT…</div>';
+  out.innerHTML='<div style="color:#94a3b8">'+esc(statusMsg||'creating PAT…')+'</div>';
   try{
-    const r=await apiFetch('/api/create-ado-pat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({username:user,password:pass,tenant_id:tid,organization:org,
-        display_name:name,scope:scope,valid_days:days,all_orgs:allOrgs})});
+    const body=Object.assign({tenant_id:tid,organization:org,display_name:name,
+      scope:scope,valid_days:days,all_orgs:allOrgs}, creds||{});
+    const r=await apiFetch('/api/create-ado-pat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
     if(d.error&&!d.aadsts_code){
-      // Non-ROPC failure (org discovery / PAT creation) — show stage + message.
       out.innerHTML=`<div style="color:#f87171">✗ ${esc(d.stage||'error')}: ${esc(d.error)}</div>`+
         (d.organizations&&d.organizations.length?`<div style="color:#94a3b8;font-size:12px">orgs seen: ${esc(d.organizations.join(', '))}</div>`:'');
       return;
     }
     if(!d.ok){
-      // ROPC blocked at the token step — same finding framing as the ROPC panel.
-      out.innerHTML=`<div style="color:#fbbf24;margin-bottom:4px">✗ ${esc(d.aadsts_code||d.error||'blocked')} — CA policy blocked the ROPC grant to Azure DevOps (this may be the *expected*/good outcome)</div>
+      out.innerHTML=`<div style="color:#fbbf24;margin-bottom:4px">✗ ${esc(d.aadsts_code||d.error||'blocked')} — CA policy blocked the token grant to Azure DevOps (this may be the *expected*/good outcome)</div>
         <div style="color:#94a3b8;font-size:12px">${esc(d.error_description||'')}</div>`;
       return;
     }
@@ -8135,7 +8232,7 @@ async function adoPatRun(siteId){
     const orgList=(d.organizations&&d.organizations.length>1)
       ? `<div style="color:#94a3b8;font-size:12px">other orgs on this account: ${esc(d.organizations.filter(o=>o!==d.organization).join(', '))}</div>`:'';
     out.innerHTML=`<div style="color:#f87171;font-weight:600;margin-bottom:4px">⚠ ADO PAT minted — durable credential, survives password reset & usually outside CA/MFA</div>
-      <div style="color:#4ade80;margin-bottom:4px">✓ "${esc(d.display_name||name)}" in org <b>${esc(d.organization||'?')}</b> · scope ${esc(d.scope||scope)} · valid to ${esc(d.valid_to||'?')}${d.token_source==='ropc'?' · via ROPC':''}</div>
+      <div style="color:#4ade80;margin-bottom:4px">✓ "${esc(d.display_name||name)}" in org <b>${esc(d.organization||'?')}</b> · scope ${esc(d.scope||scope)} · valid to ${esc(d.valid_to||'?')} · via ${esc(d.token_source||'?')}</div>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
         <code style="color:#cbd5e1;font-size:11px;flex:1;background:#020617;padding:4px 8px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(pat.slice(0,12))}… (${pat.length} chars)</code>
         <button class="btn" style="padding:2px 10px;font-size:12px;background:#1e3a5f" data-tok="${esc(pat)}" onclick="copyToClipboard(this.dataset.tok,this)">Copy PAT</button>
@@ -8143,6 +8240,56 @@ async function adoPatRun(siteId){
       <div style="color:#78859b;font-size:11px">authorizationId ${esc(d.authorization_id||'?')} — revoke from ADO → User settings → Personal access tokens</div>
       ${orgList}`;
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
+}
+// Dispatch on the selected method.
+function adoPatGo(siteId){
+  const out=document.getElementById('adopat-result-'+siteId);
+  const m=document.getElementById('adopat-method-'+siteId)?.value||'ropc';
+  if(m==='devicecode') return adoPatDeviceCode(siteId);
+  if(m==='captured'){
+    const tok=(document.getElementById('adopat-token-'+siteId)?.value||'').trim();
+    if(!tok){out.innerHTML='<div style="color:#f87171">paste an ADO-audience access token</div>';return}
+    return _adoPatCreate(siteId,{access_token:tok},'captured token → discover org → create PAT…');
+  }
+  const user=(document.getElementById('adopat-user-'+siteId)?.value||'').trim();
+  const pass=document.getElementById('adopat-pass-'+siteId)?.value||'';
+  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
+  return _adoPatCreate(siteId,{username:user,password:pass},'ROPC → ADO token → discover org → create PAT…');
+}
+// Device-code flow: start, show the code, poll until signed in, then mint.
+async function adoPatDeviceCode(siteId){
+  const out=document.getElementById('adopat-result-'+siteId);
+  const tid=(document.getElementById('adopat-tid-'+siteId)?.value||'').trim()||'organizations';
+  out.innerHTML='<div style="color:#94a3b8">requesting device code…</div>';
+  let start;
+  try{
+    const r=await apiFetch('/api/ado-devicecode/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid})});
+    start=await r.json();
+  }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>';return}
+  if(!start.ok){out.innerHTML='<div style="color:#f87171">✗ '+esc(start.error||'device code init failed')+'</div>';return}
+  const dc=start.device_code, cid=start.client_id;
+  const vuri=start.verification_uri||'https://microsoft.com/devicelogin';
+  out.innerHTML=`<div style="background:#0c1912;border:1px solid #1f3a29;border-radius:4px;padding:10px;margin-bottom:6px">
+    <div style="color:#e6edf3;font-size:13px;margin-bottom:6px">Complete sign-in (with MFA) to mint the ADO token:</div>
+    <div style="font-size:13px;margin-bottom:4px">1. Open <a href="${esc(vuri)}" target="_blank" style="color:#56c2ff">${esc(vuri)}</a></div>
+    <div style="font-size:13px">2. Enter code <code style="background:#020617;color:#4ade80;font-size:15px;padding:2px 8px;border-radius:4px;font-weight:700;letter-spacing:1px">${esc(start.user_code||'?')}</code>
+      <button class="btn" style="padding:1px 8px;font-size:11px;background:#1e3a5f" data-tok="${esc(start.user_code||'')}" onclick="copyToClipboard(this.dataset.tok,this)">Copy</button></div>
+    <div id="adopat-dcs-${siteId}" style="color:#94a3b8;font-size:12px;margin-top:8px">⏳ waiting for you to complete sign-in…</div>
+  </div>`;
+  const st=document.getElementById('adopat-dcs-'+siteId);
+  const deadline=Date.now()+Math.min(start.expires_in||900,900)*1000;
+  let poll=Math.max(start.interval||5,5)*1000;
+  const tick=async()=>{
+    if(Date.now()>deadline){st.innerHTML='<span style="color:#f87171">✗ device code expired — Start device code again</span>';return}
+    try{
+      const r=await apiFetch('/api/ado-devicecode/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,client_id:cid,device_code:dc})});
+      const d=await r.json();
+      if(d.ok&&d.access_token){st.innerHTML='<span style="color:#4ade80">✓ signed in — minting PAT…</span>';return _adoPatCreate(siteId,{access_token:d.access_token},'device-code token → discover org → create PAT…');}
+      if(d.pending){if(d.slow_down)poll+=5000;setTimeout(tick,poll);return}
+      st.innerHTML='<span style="color:#f87171">✗ '+esc(d.aadsts_code||d.error||'failed')+'</span>';
+    }catch(e){setTimeout(tick,poll);}
+  };
+  setTimeout(tick,poll);
 }
 
 // ── WebSocket: Control (config, sessions, credentials) ──
