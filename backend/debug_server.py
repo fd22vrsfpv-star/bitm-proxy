@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.36.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.37.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1767,6 +1767,61 @@ async def api_aaa_store_token(body: dict):
         site_id, token, body.get("source") or "device-code",
         (body.get("tenant_id") or "").strip())
     return {"ok": ok, "persisted": ok}
+
+
+@app.post("/api/analyze-flow")
+async def api_analyze_flow(body: dict):
+    """Stream an Ollama flow analysis as NDJSON (one JSON object per line):
+    {"type":"chunk","delta":...} per token batch, then a terminal
+    {"type":"done", ...analyze_flow result...} or {"type":"error","error":...}.
+
+    Replaces the old WebSocket analyze path: a fresh HTTP request per run, so a
+    backend restart fails cleanly in the browser (fetch errors) instead of
+    stranding a zombie socket — that was the analysis-hang class. The
+    backend->Ollama leg is unchanged (analyze_flow's httpx streaming call)."""
+    import asyncio as _asyncio
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from backend.ollama_hook import analyze_flow
+
+    session_id = (body.get("session_id") or "").strip()
+    preset = (body.get("preset") or "general").strip()
+    start_seq = body.get("start_seq")
+    end_seq = body.get("end_seq")
+    seqs = body.get("seqs")
+
+    async def _gen():
+        if not session_id:
+            yield _json.dumps({"type": "error", "error": "session_id required"}) + "\n"
+            return
+        q: _asyncio.Queue = _asyncio.Queue()
+
+        async def on_chunk(delta):
+            await q.put({"type": "chunk", "delta": delta})
+
+        async def _run():
+            try:
+                res = await analyze_flow(session_id, start_seq=start_seq,
+                                         end_seq=end_seq, seqs=seqs,
+                                         preset=preset, on_chunk=on_chunk)
+                await q.put({"type": "done", **(res or {})})
+            except Exception as e:
+                await q.put({"type": "error", "error": f"{type(e).__name__}: {e}"})
+            finally:
+                await q.put(None)
+
+        task = _asyncio.create_task(_run())
+        try:
+            while True:
+                item = await q.get()
+                if item is None:
+                    break
+                yield _json.dumps(item, default=str) + "\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(_gen(), media_type="application/x-ndjson")
 
 
 @app.get("/api/headers")
@@ -3541,26 +3596,13 @@ function _paintAnalysis(sid){
 }
 function _dismissAnalysis(sid){delete _lastAnalysis[sid]; _paintAnalysis(sid)}
 
-// Ticker: keeps the elapsed-seconds counter moving AND enforces the
-// analysis watchdog. Runs once per second; only does work when something
-// is in flight. The watchdog check runs regardless of the current tab so a
-// stalled analysis is cleared even if the operator switched away.
+// Ticker: keeps the "in progress" elapsed-seconds counter moving before the
+// first token lands. Analysis now streams over fetch (see analyzeFlow), which
+// owns its own timeout via AbortController and cleans up on completion/error,
+// so no watchdog is needed here anymore.
 setInterval(()=>{
-  const sids=Object.keys(_analysisInProgress);
-  if(sids.length===0)return;
-  const now=Date.now();
-  for(const sid of sids){
-    const inf=_analysisInProgress[sid];
-    if(inf && (now-(inf.lastActivity||inf.startedAt))>ANALYSIS_WATCHDOG_MS){
-      _lastAnalysis[sid]={msg:{ok:false,error:'No response after '+Math.round(ANALYSIS_WATCHDOG_MS/1000)+'s — the analysis stalled or the dashboard connection dropped (e.g. after a server restart). Reload the page (Cmd/Ctrl+Shift+R) and try again.'}, at:now};
-      delete _analysisInProgress[sid];
-      delete _analysisStream[sid];
-      renderTabs();  // drop the spinner badge
-      _toolEnd('Analyze (Ollama)', false, 'timed out — '+Math.round(ANALYSIS_WATCHDOG_MS/1000)+'s no response');
-      if(currentTab==='flow' && flowSelectedSid===sid) _paintAnalysis(sid);
-    }
-  }
-  if(currentTab==='flow') _paintAnalysis(flowSelectedSid);
+  if(currentTab==='flow' && Object.keys(_analysisInProgress).length)
+    _paintAnalysis(flowSelectedSid);
 }, 1000);
 
 function renderFlowDetail(e){
@@ -4852,29 +4894,57 @@ function analyzeFlow(){
   const presetEl=document.getElementById('analyze-preset');
   const preset=presetEl?presetEl.value:'general';
   _toolStart('Analyze (Ollama)', `Ollama analysis preset=${preset}`, flowSelectedSid);
-  // Mark the session as having an in-flight analysis so _paintAnalysis can
-  // re-render the running state after tab switches, row clicks, or flow
-  // rebuilds. Cleared when flow_analysis arrives.
-  const payload={cmd:'analyze_flow',session_id:flowSelectedSid,preset:preset};
-  if(picks.length)payload.seqs=picks;
-  else{payload.start_seq=m.start;payload.end_seq=m.end}
-  // Send FIRST and only show the spinner if the command actually went out.
-  // A dropped send (socket mid-reconnect after a server restart) otherwise
-  // left an infinite "in progress" spinner with no request behind it.
-  if(!send(payload)){
-    _lastAnalysis[flowSelectedSid]={msg:{ok:false,error:'Not connected to the dashboard backend right now — the live connection is reconnecting (this happens right after a server restart). Wait a couple of seconds and click Run again.'}, at:Date.now()};
-    delete _analysisInProgress[flowSelectedSid];
-    _paintAnalysis(flowSelectedSid); renderTabs();
-    _toolEnd('Analyze (Ollama)', false, 'connection not ready');
-    return;
-  }
+  const sid=flowSelectedSid;
+  const body={session_id:sid,preset:preset};
+  if(picks.length)body.seqs=picks;
+  else{body.start_seq=m.start;body.end_seq=m.end}
   const _now=Date.now();
-  // Mark the session as having an in-flight analysis so _paintAnalysis can
-  // re-render the running state after tab switches, row clicks, or flow
-  // rebuilds. lastActivity feeds the watchdog. Cleared when flow_analysis
-  // arrives (or the watchdog fires).
-  _analysisInProgress[flowSelectedSid] = { preset, startedAt: _now, lastActivity: _now };
-  _paintAnalysis(flowSelectedSid);
+  _analysisInProgress[sid]={preset,startedAt:_now,lastActivity:_now};
+  _analysisStream[sid]={text:'',preset:preset};
+  _paintAnalysis(sid); renderTabs();
+  // Streaming HTTP (NDJSON) instead of a WebSocket command: a fresh request
+  // per run, so a backend restart fails cleanly (fetch errors) rather than
+  // stranding a zombie socket — that was the analysis-hang class.
+  // AbortController is the hard timeout.
+  const ac=new AbortController();
+  const _to=setTimeout(()=>{try{ac.abort()}catch(_){}}, 240000);
+  const _finish=(msg)=>{
+    clearTimeout(_to);
+    delete _analysisInProgress[sid]; delete _analysisStream[sid];
+    _lastAnalysis[sid]={msg:msg, at:Date.now()};
+    if(currentTab==='flow'&&flowSelectedSid===sid)_paintAnalysis(sid);
+    renderTabs();
+    _toolEnd('Analyze (Ollama)', !!msg.ok, msg.ok?'done':(msg.error||'failed'));
+  };
+  (async()=>{
+    try{
+      const r=await apiFetch('/api/analyze-flow',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ac.signal});
+      if(!r.ok||!r.body){_finish({ok:false,error:'HTTP '+r.status+' from /api/analyze-flow'});return}
+      const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
+      while(true){
+        const rd=await reader.read();
+        if(rd.done)break;
+        buf+=dec.decode(rd.value,{stream:true});
+        let nl;
+        while((nl=buf.indexOf('\n'))>=0){
+          const line=buf.slice(0,nl).trim(); buf=buf.slice(nl+1);
+          if(!line)continue;
+          let ev; try{ev=JSON.parse(line)}catch(_){continue}
+          if(ev.type==='chunk'){
+            const st=_analysisStream[sid]; if(st)st.text+=(ev.delta||'');
+            const inf=_analysisInProgress[sid]; if(inf)inf.lastActivity=Date.now();
+            if(currentTab==='flow'&&flowSelectedSid===sid)_paintAnalysis(sid);
+          } else if(ev.type==='done'){ _finish(ev); return; }
+          else if(ev.type==='error'){ _finish({ok:false,error:ev.error||'analysis error'}); return; }
+        }
+      }
+      // stream closed without an explicit terminal event — keep what streamed
+      const st=_analysisStream[sid];
+      _finish({ok:true, analysis:(st&&st.text)||'', preset:preset});
+    }catch(e){
+      _finish({ok:false, error:(e&&e.name==='AbortError')?'Timed out (no response in 240s) — reload if the backend restarted, then retry.':('Request failed: '+((e&&e.message)||e))});
+    }
+  })();
   renderTabs();  // tab button picks up the spinner badge
 }
 

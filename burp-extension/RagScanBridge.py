@@ -1367,15 +1367,27 @@ class RagScanIssue(IScanIssue):
             rq = ex.get("request_raw")
             if not rq:
                 continue
+            # Build the service per exchange from its own URL — a flow can span
+            # several hosts (myapps → login.microsoftonline.com → …). If the URL
+            # won't parse (odd chars, e.g. an "@" in the query), fall back to the
+            # finding's own host so the exchange still renders rather than being
+            # silently dropped.
+            service = None
             try:
-                # Build the service per exchange from its own URL — a flow can
-                # span several hosts (myapps → login.microsoftonline.com → …).
-                u = ex.get("url") or self._url
-                p = URL(u)
+                p = URL(ex.get("url") or self._url)
                 host = p.getHost()
-                proto = p.getProtocol()
-                port = p.getPort() if p.getPort() > 0 else (443 if proto == "https" else 80)
-                service = self._helpers.buildHttpService(host, port, proto == "https")
+                if host:
+                    proto = p.getProtocol()
+                    port = p.getPort() if p.getPort() > 0 else (443 if proto == "https" else 80)
+                    service = self._helpers.buildHttpService(host, port, proto == "https")
+            except:
+                service = None
+            if service is None:
+                try:
+                    service = self._helpers.buildHttpService(self._host, self._port, self._protocol == "https")
+                except:
+                    continue
+            try:
                 req_bytes = self._helpers.stringToBytes(rq)
                 rs = ex.get("response_raw")
                 resp_bytes = self._helpers.stringToBytes(rs) if rs else None
