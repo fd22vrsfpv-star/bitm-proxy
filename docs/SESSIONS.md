@@ -822,6 +822,8 @@ $DATA_DIR/
 ├── devices/<dev_id>.json        # device profiles (#10) — encrypted if passphrase set
 ├── subsessions/<sid>.json       # per-browser-session sub-session events (#2)
 ├── host_captures/<host>.json    # rolling per-hostname event store (#3)
+├── flows/<sid>.json             # persisted flow-trace sessions (debounced flush)
+├── rag_findings/imported.json   # persisted RAG findings (Send to RAG / Burp import)
 ├── screenshots/<sid>/*.jpg      # per-session frame captures
 ├── logs/                        # only populated when log_to_file = true
 ├── .api_key_plaintext           # mode 0600 — printed by run.py on boot

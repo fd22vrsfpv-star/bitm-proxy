@@ -339,6 +339,8 @@ def get_logs(last_n: int = 500, category: str | None = None,
 MAX_FLOW_PER_SESSION = 2000
 _session_flows: dict[str, deque] = {}
 _session_flow_seq: dict[str, int] = {}
+# Sessions changed since the last persistence flush (see flush_dirty_flows).
+_flow_dirty: set[str] = set()
 
 
 def append_flow(session_id: str, entry: dict) -> int:
@@ -356,6 +358,7 @@ def append_flow(session_id: str, entry: dict) -> int:
     entry["session_id"] = session_id
     entry["seq"] = seq
     buf.append(entry)
+    _flow_dirty.add(session_id)
     _push(entry)
     return seq
 
@@ -368,6 +371,7 @@ def update_flow(session_id: str, req_id: str, patch: dict) -> bool:
     for entry in reversed(buf):
         if entry.get("req_id") == req_id:
             entry.update(patch)
+            _flow_dirty.add(session_id)
             _push({
                 "type": "flow_update",
                 "session_id": session_id,
@@ -388,6 +392,79 @@ def clear_flow(session_id: str) -> None:
     if session_id in _session_flows:
         _session_flows[session_id].clear()
         _session_flow_seq[session_id] = 0
+        _flow_dirty.add(session_id)
+
+
+# ── Flow persistence ────────────────────────────────────────────────────────
+# _session_flows is otherwise in-memory and lost on restart. Persist dirty
+# sessions to JsonStore on a debounced background loop (flush_flows_loop) —
+# writing on every append/update would be far too much I/O. Flow capture is
+# itself gated by flow_trace_enabled, so this is a no-op when trace is off.
+_flow_store_singleton = None
+
+
+def _flow_store():
+    global _flow_store_singleton
+    if _flow_store_singleton is None:
+        from backend.store import JsonStore
+        _flow_store_singleton = JsonStore("flows")
+    return _flow_store_singleton
+
+
+def flush_dirty_flows() -> int:
+    """Write every session changed since the last flush. Returns count written.
+    Re-marks a session dirty if its write fails, so it retries next round."""
+    if not _flow_dirty:
+        return 0
+    sids = list(_flow_dirty)
+    _flow_dirty.clear()
+    store = _flow_store()
+    written = 0
+    for sid in sids:
+        buf = _session_flows.get(sid)
+        try:
+            if buf and len(buf) > 0:
+                store.put(sid, {"entries": list(buf),
+                                "seq": _session_flow_seq.get(sid, len(buf))})
+            else:
+                store.delete(sid)
+            written += 1
+        except Exception:
+            _flow_dirty.add(sid)
+    return written
+
+
+def load_persisted_flows() -> int:
+    """Restore persisted session flows into memory at startup."""
+    try:
+        store = _flow_store()
+        keys = store.list_keys()
+    except Exception:
+        return 0
+    loaded = 0
+    for sid in keys:
+        try:
+            rec = store.get(sid) or {}
+            entries = rec.get("entries") or []
+            if not entries:
+                continue
+            _session_flows[sid] = deque(entries, maxlen=MAX_FLOW_PER_SESSION)
+            _session_flow_seq[sid] = rec.get("seq", len(entries))
+            loaded += 1
+        except Exception:
+            continue
+    return loaded
+
+
+async def flush_flows_loop(interval: float = 8.0):
+    """Background debounced flusher — write dirty session flows every
+    `interval` seconds. Started from run.py at boot."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            flush_dirty_flows()
+        except Exception:
+            pass
 
 
 def find_flow_seq_by_req_id(session_id: str, req_id: str) -> int | None:

@@ -146,7 +146,26 @@ async def main():
         print("[run] Python reverse proxy disabled (DISABLE_PYTHON_REVPROXY set)",
               flush=True)
 
-    await asyncio.gather(*servers, return_exceptions=True)
+    # Restore persisted flow-trace sessions and start the debounced flusher so
+    # captured flows survive a restart (see backend/shared.py flow persistence).
+    from backend.shared import (load_persisted_flows, flush_flows_loop,
+                                flush_dirty_flows)
+    try:
+        _n = load_persisted_flows()
+        if _n:
+            print(f"[run] restored {_n} persisted flow session(s)", flush=True)
+    except Exception as _e:
+        print(f"[run] flow restore failed: {_e}", flush=True)
+    asyncio.create_task(flush_flows_loop())
+
+    try:
+        await asyncio.gather(*servers, return_exceptions=True)
+    finally:
+        # Final flush so the last <interval> seconds of flow aren't lost on exit.
+        try:
+            flush_dirty_flows()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
