@@ -433,6 +433,28 @@ async def acquire_token_via_az_login(
                       "-Scope CurrentUser -Force'"),
         }
 
+    # Non-interactive Connect-AzAccount -Credential can't satisfy an MFA /
+    # interaction-required Conditional Access policy — the most common failure
+    # on a hardened tenant. Redirect to the paths that actually work there.
+    if re.search(r"interaction[_ ]required|multi-?factor|user interaction is "
+                 r"required|AADSTS500(76|79)", stderr, re.IGNORECASE):
+        append_log("warn", "aaa_runner",
+                   f"[{site_id}] Get-AAATokenFromAzLogin blocked by MFA/CA")
+        return {
+            "ok": False, "exit_code": exit_code, "elapsed_ms": elapsed_ms,
+            "stderr": stderr,
+            "error": ("Conditional Access requires MFA / interactive sign-in, so "
+                      "Connect-AzAccount with a username+password can't get a "
+                      "token here. Use a path that works on an MFA tenant: "
+                      "(1) run the AAA functions directly with a Graph token you "
+                      "already captured from the BITM session or the phantom "
+                      "chain — pick it in the AAA runner's Token dropdown; no az "
+                      "login needed. (2) Tick 'Service principal' and pass an app "
+                      "(client) ID + secret as user/password to bypass user MFA. "
+                      "(3) Get a token out-of-band via device code "
+                      "(roadtx/AADInternals -UseDeviceCode) and use that."),
+        }
+
     token: str | None = None
     if exit_code == 0 and stdout.strip():
         try:
