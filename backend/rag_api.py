@@ -23,13 +23,23 @@ from fastapi import FastAPI, Request, Query
 
 from backend.shared import _session_flows, append_log
 from backend.rag_bridge import _build_finding, _flow_hostname
+from backend.store import JsonStore
 
 
 app = FastAPI(title="BITM Proxy — RAG API", version="1.0.0")
 
 
-# In-memory buffer for findings imported from external sources (e.g. Burp export)
-_imported_findings: list[dict] = []
+# Findings imported from external sources (Burp export, dashboard "Send to
+# RAG"). Persisted via JsonStore so they survive an app/container restart —
+# the built-in RAG store is otherwise in-memory only, so a restart used to
+# wipe every finding. (Live captured flows in _session_flows are still
+# in-memory; those become findings dynamically in _all_findings().)
+_findings_store = JsonStore("rag_findings")
+_IMPORT_KEY = "imported"
+try:
+    _imported_findings: list[dict] = _findings_store.get(_IMPORT_KEY) or []
+except Exception:
+    _imported_findings = []
 
 
 def _all_findings() -> list[dict]:
@@ -183,6 +193,12 @@ def import_findings(findings: list, source: str = "external") -> dict:
         f.setdefault("captured_at", time.time())
         _imported_findings.append(f)
         imported += 1
+    if imported:
+        try:
+            _findings_store.put(_IMPORT_KEY, _imported_findings)
+        except Exception as e:
+            append_log("warn", "rag_api",
+                       f"failed to persist imported findings: {e}")
     append_log("info", "rag_api",
                f"Imported {imported} findings from {source} ({skipped} skipped)")
     return {"imported": imported, "skipped": skipped,
@@ -193,6 +209,20 @@ def import_findings(findings: list, source: str = "external") -> dict:
 async def import_findings_exchange(body: dict):
     return import_findings(body.get("findings", []),
                            body.get("source", "external"))
+
+
+@app.post("/findings/clear")
+async def findings_clear():
+    """Drop all imported/persisted findings (reset). Live captured flows in
+    _session_flows are unaffected — they rebuild into findings on demand."""
+    n = len(_imported_findings)
+    _imported_findings.clear()
+    try:
+        _findings_store.put(_IMPORT_KEY, [])
+    except Exception:
+        pass
+    append_log("info", "rag_api", f"Cleared {n} imported findings")
+    return {"cleared": n}
 
 
 # ── Burp extension: Follow-Up Queue + tunnel nodes ──────────────────────────
