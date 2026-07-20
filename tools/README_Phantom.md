@@ -279,6 +279,10 @@ Required:
 
 Device:
   --device-name         Phantom device hostname (auto-generated if omitted)
+  --device-type         Registered OS type: Windows (default), macOS, iOS,
+                        Android. A non-Windows join probes platform-scoped
+                        Conditional Access / Intune compliance policy.
+  --os-version          Registered OS version (roadtx default if omitted)
 
 Intune (opt-in):
   --intune              Enable Intune enrollment phases (8-9)

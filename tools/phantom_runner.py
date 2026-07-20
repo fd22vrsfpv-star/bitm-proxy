@@ -71,6 +71,8 @@ def main() -> None:
         domain=domain,
         device_name=os.environ.get("PHANTOM_DEVICE_NAME", "").strip()
                      or _autogen_device_name(),
+        device_type=os.environ.get("PHANTOM_DEVICE_TYPE", "").strip() or "Windows",
+        os_version=os.environ.get("PHANTOM_OS_VERSION", "").strip() or None,
         intune=_truthy(os.environ.get("PHANTOM_INTUNE")),
         intune_host=os.environ.get("PHANTOM_INTUNE_HOST", "").strip(),
         hybrid_domain=os.environ.get("PHANTOM_HYBRID_DOMAIN", "").strip(),

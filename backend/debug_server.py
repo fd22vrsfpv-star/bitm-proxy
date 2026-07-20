@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.33.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.34.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -2493,6 +2493,8 @@ requests.get("https://example.com",
         <div class="config-row"><label style="color:#94a3b8">Password</label><input id="phantom-pass" type="password" class="cfg-input cfg-input-wide"></div>
         <div class="config-row"><label style="color:#94a3b8">Domain</label><input id="phantom-domain" class="cfg-input cfg-input-wide" placeholder="target.com"></div>
         <div class="config-row"><label style="color:#94a3b8">Device name</label><input id="phantom-devname" class="cfg-input cfg-input-wide" placeholder="(auto-generated)"></div>
+        <div class="config-row"><label style="color:#94a3b8" title="OS platform the phantom device registers as. A non-Windows join probes platform-scoped Conditional Access / Intune compliance that a Windows join wouldn't hit.">Device type</label><select id="phantom-devtype" class="cfg-input" style="width:130px"><option value="Windows" selected>Windows</option><option value="macOS">macOS</option><option value="iOS">iOS</option><option value="Android">Android</option></select></div>
+        <div class="config-row"><label style="color:#94a3b8" title="Registered OS version; leave blank for roadtx's default">OS version</label><input id="phantom-osver" class="cfg-input" style="width:130px" placeholder="(roadtx default)"></div>
         <hr style="border:none;border-top:1px solid #222;margin:10px 0">
         <div class="config-row"><label style="color:#94a3b8">Start phase</label><input id="phantom-start" type="number" min="1" max="9" value="1" class="cfg-input" style="width:80px"></div>
         <div class="config-row"><label style="color:#94a3b8">Stop phase</label><input id="phantom-stop" type="number" min="1" max="9" placeholder="(no cap)" class="cfg-input" style="width:80px"></div>
@@ -6133,6 +6135,8 @@ function phantomStart(){
     password:document.getElementById('phantom-pass').value||'',
     domain:(document.getElementById('phantom-domain').value||'').trim(),
     device_name:(document.getElementById('phantom-devname').value||'').trim(),
+    device_type:document.getElementById('phantom-devtype').value||'Windows',
+    os_version:(document.getElementById('phantom-osver').value||'').trim(),
     start_phase:parseInt(document.getElementById('phantom-start').value||'1',10)||1,
     stop_phase:parseInt(document.getElementById('phantom-stop').value||'0',10)||0,
     force:document.getElementById('phantom-force').checked,

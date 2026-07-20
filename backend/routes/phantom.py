@@ -135,6 +135,10 @@ async def _spawn_runner(params: dict, run_dir: Path) -> asyncio.subprocess.Proce
     # Optional
     if params.get("device_name"):
         env["PHANTOM_DEVICE_NAME"] = _safe_str(params["device_name"])
+    if params.get("device_type"):
+        env["PHANTOM_DEVICE_TYPE"] = _safe_str(params["device_type"])
+    if params.get("os_version"):
+        env["PHANTOM_OS_VERSION"] = _safe_str(params["os_version"])
     if params.get("intune"):
         env["PHANTOM_INTUNE"] = "1"
     if params.get("intune_host"):
