@@ -248,6 +248,7 @@ def _finding_to_queue_item(f: dict, idx: int) -> dict:
         "evidence": ev or "",
         "request_raw": f.get("request_raw") or "",
         "response_raw": f.get("response_raw") or "",
+        "exchanges": f.get("exchanges") or [],
         "finding_source": f.get("source") or "bitm-proxy",
         "status": "pending",
     }

@@ -22,6 +22,11 @@ import httpx
 from backend.shared import append_log, get_config_value, get_flow
 
 
+# Cap the per-finding exchange list so a large session doesn't bloat the
+# finding (and Burp's issue) — the first N captured exchanges cover the flow.
+_MAX_EXCHANGES_PER_FINDING = 80
+
+
 def _is_builtin_rag(url: str) -> bool:
     """True when `url` points at THIS process's built-in RAG API (:8000 /
     RAG_PORT on a loopback host). Submitting to ourselves over HTTP means a
@@ -131,11 +136,10 @@ def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
     first = entries[0] if entries else {}
     summary_lines = [_summarize_entry(e) for e in entries]
     key = _key_elements(entries)
-    # Flows that captured session material (tokens / cookies / auth headers)
-    # get a real severity so they survive the Burp extension's default
-    # "hide recon-only" filter and import as issues; pure navigation stays info.
-    _severity = ("low" if (key.get("token_responses") or key.get("set_cookies")
-                           or key.get("auth_headers")) else "info")
+    # Captured login flows are informational by nature. The Burp extension no
+    # longer filters bitm-proxy findings out on severity (it exempts this
+    # source from its "hide recon-only" filter), so keep the honest severity.
+    _severity = "info"
 
     description_parts = [
         f"Captured login flow for {host} (session {session_id}).",
@@ -166,10 +170,21 @@ def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
     except Exception:
         pass
 
-    # Use first entry as the request/response pair for Burp's message view
+    # Render EVERY captured exchange as a raw request/response pair so Burp's
+    # message viewer shows the whole flow (not just the landing GET). Capped so
+    # a huge session doesn't bloat the finding. request_raw/response_raw stay as
+    # the first pair for older importers that only read those.
+    exchanges = []
+    for e in entries[:_MAX_EXCHANGES_PER_FINDING]:
+        if not e.get("url"):
+            continue
+        rq, rs = _raw_exchange(e)
+        exchanges.append({"url": e.get("url"), "method": e.get("method", "GET"),
+                          "status": e.get("status"),
+                          "request_raw": rq, "response_raw": rs})
     req_raw, resp_raw = ("", "")
-    if entries:
-        req_raw, resp_raw = _raw_exchange(entries[0])
+    if exchanges:
+        req_raw, resp_raw = exchanges[0]["request_raw"], exchanges[0]["response_raw"]
 
     return {
         "name": f"trace_flow_for_{host}",
@@ -182,6 +197,7 @@ def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
         "description": " ".join(description_parts),
         "request_raw": req_raw,
         "response_raw": resp_raw,
+        "exchanges": exchanges,
         "captured_at": time.time(),
         "session_id": session_id,
         "metadata": {

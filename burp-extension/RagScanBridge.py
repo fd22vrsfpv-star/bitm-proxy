@@ -704,12 +704,15 @@ class BurpExtender(IBurpExtender, ITab):
                 else:
                     findings = all_findings
 
-                # Filter out recon-only findings (info/recon severity with no actionable data)
+                # Filter out recon-only findings (info/recon severity with no actionable data).
+                # bitm-proxy's own captured-flow findings are exempt — they're always
+                # relevant and are informational by nature, so keep them regardless.
                 if self._hide_recon.isSelected():
                     before_recon = len(findings)
                     recon_severities = {"info", "recon", "informational", ""}
                     findings = [f for f in findings
-                                if (f.get("severity") or "").lower() not in recon_severities
+                                if f.get("source", "").lower() == "bitm-proxy"
+                                or (f.get("severity") or "").lower() not in recon_severities
                                 or f.get("name", "").lower().startswith(("cve-", "vuln", "sql", "xss", "csrf", "injection"))]
                     self._log("[Import] Recon filter: %d -> %d (removed %d info/recon-only)" % (
                         before_recon, len(findings), before_recon - len(findings)))
@@ -742,6 +745,7 @@ class BurpExtender(IBurpExtender, ITab):
                             confidence=CONFIDENCE_MAP.get(f.get("confidence", "tentative"), "Tentative"),
                             request_raw=_s(request_raw),
                             response_raw=_s(response_raw),
+                            exchanges=f.get("exchanges"),
                         )
                         self._callbacks.addScanIssue(issue)
                         imported += 1
@@ -1274,6 +1278,7 @@ class BurpExtender(IBurpExtender, ITab):
                         confidence="Tentative",
                         request_raw=request_raw,
                         response_raw=response_raw,
+                        exchanges=item.get("exchanges"),
                     )
                     self._callbacks.addScanIssue(issue)
                     imported += 1
@@ -1317,7 +1322,7 @@ class FollowUpSelectionListener(ListSelectionListener):
 
 class RagScanIssue(IScanIssue):
     def __init__(self, helpers, callbacks, url, name, detail, severity, confidence,
-                 request_raw=None, response_raw=None):
+                 request_raw=None, response_raw=None, exchanges=None):
         self._helpers = helpers
         self._callbacks = callbacks
         self._url = url
@@ -1327,6 +1332,10 @@ class RagScanIssue(IScanIssue):
         self._confidence = confidence
         self._request_raw = request_raw
         self._response_raw = response_raw
+        # Full captured flow (list of {url, request_raw, response_raw}); when
+        # present, getHttpMessages renders every exchange so Burp's viewer shows
+        # the whole flow, not just the first request.
+        self._exchanges = exchanges or []
         try:
             parsed = URL(url)
             self._host = parsed.getHost()
@@ -1349,15 +1358,31 @@ class RagScanIssue(IScanIssue):
     def getIssueDetail(self): return self._detail
     def getRemediationDetail(self): return None
     def getHttpMessages(self):
-        if not self._request_raw:
-            return []
-        try:
-            service = self._helpers.buildHttpService(self._host, self._port, self._protocol == "https")
-            req_bytes = self._helpers.stringToBytes(self._request_raw)
-            resp_bytes = self._helpers.stringToBytes(self._response_raw) if self._response_raw else None
-            return [CustomHttpRequestResponse(req_bytes, resp_bytes, service)]
-        except:
-            return []
+        # Prefer the full exchange list; fall back to the single request/response.
+        pairs = self._exchanges if self._exchanges else (
+            [{"url": self._url, "request_raw": self._request_raw,
+              "response_raw": self._response_raw}] if self._request_raw else [])
+        msgs = []
+        for ex in pairs:
+            rq = ex.get("request_raw")
+            if not rq:
+                continue
+            try:
+                # Build the service per exchange from its own URL — a flow can
+                # span several hosts (myapps → login.microsoftonline.com → …).
+                u = ex.get("url") or self._url
+                p = URL(u)
+                host = p.getHost()
+                proto = p.getProtocol()
+                port = p.getPort() if p.getPort() > 0 else (443 if proto == "https" else 80)
+                service = self._helpers.buildHttpService(host, port, proto == "https")
+                req_bytes = self._helpers.stringToBytes(rq)
+                rs = ex.get("response_raw")
+                resp_bytes = self._helpers.stringToBytes(rs) if rs else None
+                msgs.append(CustomHttpRequestResponse(req_bytes, resp_bytes, service))
+            except:
+                continue
+        return msgs
     def getHttpService(self):
         try: return self._helpers.buildHttpService(self._host, self._port, self._protocol == "https")
         except: return None
