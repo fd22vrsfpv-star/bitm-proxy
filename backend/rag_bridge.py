@@ -131,9 +131,35 @@ def _key_elements(entries: list[dict]) -> dict[str, Any]:
     }
 
 
+_TEST_TOOL_LABELS = {"ropc": "ROPC", "token": "v1+v2 token",
+                     "adopat": "ADO PAT", "aaa": "AAA token", "graph": "Graph"}
+
+
+def _test_trace_title(session_id: str, first: dict, host: str) -> str | None:
+    """A distinct, tool-labeled title for a dashboard-test trace so ROPC /
+    v1+v2 token / ADO PAT / AAA / Graph runs are individually recognizable in
+    RAG / Burp (they otherwise all share the login.microsoftonline.com host and
+    would collapse to one indistinguishable `trace_flow_for_...` finding).
+    Returns None for ordinary browser-session flows."""
+    tool = (first or {}).get("tool") or ""
+    if not tool and str(session_id).startswith("test_"):
+        # Older entries pre-date the per-entry tool field — recover it from the
+        # `test_<tool>_<site_id>` id (tool is a fixed vocabulary, so the split
+        # is unambiguous even when the site_id itself contains underscores).
+        rest = session_id[len("test_"):]
+        for t in _TEST_TOOL_LABELS:
+            if rest.startswith(t + "_"):
+                tool = t
+                break
+    if not tool:
+        return None
+    return f"\U0001F9EA {_TEST_TOOL_LABELS.get(tool, tool)} · {host}"
+
+
 def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
     host = _flow_hostname(entries)
     first = entries[0] if entries else {}
+    _test_title = _test_trace_title(session_id, first, host)
     summary_lines = [_summarize_entry(e) for e in entries]
     key = _key_elements(entries)
     # Captured login flows are informational by nature. The Burp extension no
@@ -187,8 +213,8 @@ def _build_finding(session_id: str, entries: list[dict]) -> dict[str, Any]:
         req_raw, resp_raw = exchanges[0]["request_raw"], exchanges[0]["response_raw"]
 
     return {
-        "name": f"trace_flow_for_{host}",
-        "title": f"trace_flow_for_{host}",
+        "name": _test_title or f"trace_flow_for_{host}",
+        "title": _test_title or f"trace_flow_for_{host}",
         "url": first.get("url") or f"https://{host}/",
         "severity": _severity,
         "confidence": "firm",

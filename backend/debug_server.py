@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.38.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.40.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -431,6 +431,7 @@ async def ws_control(ws: WebSocket):
                 f"{name}: {type(e).__name__}: {e}")
     _safe("config", get_config)
     _safe("sessions", get_active_sessions)
+    _safe("flow_sessions", _flow_session_summaries)
     _safe("saved_sessions", saved_sessions_store.list_all)
     _safe("sites", lambda: [
         {"id": k, "data": credentials_store.get(k)}
@@ -895,6 +896,19 @@ async def ws_control(ws: WebSocket):
                     await ws.send_json({"type": "rag_submit_result", **result})
                 except Exception as e:
                     await ws.send_json({"type": "rag_submit_result",
+                                        "ok": False, "error": str(e)})
+
+            elif cmd == "clear_rag_findings":
+                # Clear only the explicitly-imported findings (the "Send to
+                # RAG" set) from the built-in RAG store. Captured flow traces
+                # are untouched — they still auto-surface as findings.
+                try:
+                    from backend.rag_api import clear_imported_findings
+                    n = clear_imported_findings()
+                    await ws.send_json({"type": "rag_cleared",
+                                        "ok": True, "cleared": n})
+                except Exception as e:
+                    await ws.send_json({"type": "rag_cleared",
                                         "ok": False, "error": str(e)})
 
             elif cmd == "run_diagnostics":
@@ -1380,6 +1394,41 @@ def _test_trace_id(site_id: str, tool: str) -> str:
     return f"test_{tool}_{site_id}"
 
 
+def _flow_session_summaries() -> list[dict]:
+    """Synthetic dashboard-test traces that have captured flow, for the Flow
+    Trace dropdown.
+
+    The dropdown is otherwise built only from *active browser* sessions
+    (get_active_sessions), so the synthetic dashboard-test traces
+    (`test_<tool>_<site_id>`, produced by ROPC / v1+v2 token / ADO PAT / AAA /
+    Graph runs) never appeared as selectable, even though their flow was
+    recorded and analyzable. We advertise ONLY those here — active browser
+    sessions already reach the dropdown on their own, and ended browser
+    sessions persist on disk (for RAG/Burp) but must NOT clutter the live Flow
+    Trace list. A trace is "a test" when its id has the `test_` prefix or its
+    first entry is `source == "dashboard-test"`. Empty buffers are skipped so a
+    zero-row trace never appears. `tool`/`site_id` come off the first entry so
+    the client can label the trace without parsing the id."""
+    from backend.shared import _session_flows
+    out: list[dict] = []
+    for sid, buf in list(_session_flows.items()):
+        if not buf:
+            continue
+        first = buf[0]
+        is_test = str(sid).startswith("test_") or \
+            first.get("source") == "dashboard-test"
+        if not is_test:
+            continue
+        out.append({
+            "sid": sid,
+            "count": len(buf),
+            "browser": False,
+            "tool": first.get("tool", "") or "",
+            "site_id": first.get("site_id", "") or "",
+        })
+    return out
+
+
 def _record_test_flow(site_id, tool, method, url, req_headers, req_body,
                       status, resp_headers, resp_body):
     """Append a dashboard test (ROPC / v1+v2 token / ADO PAT / device-code /
@@ -1404,6 +1453,10 @@ def _record_test_flow(site_id, tool, method, url, req_headers, req_body,
             "response_body": resp_body if resp_body is not None else "",
             "ts_req": now, "ts_resp": now,
             "source": "dashboard-test",
+            # Carried on every entry so the dashboard can label the synthetic
+            # trace (🧪 <tool> · <site>) and RAG/Burp exports keep the context,
+            # even though the (tool, site) is also encoded in the session id.
+            "site_id": site_id, "tool": tool,
         })
     except Exception as e:
         append_log("warn", "auth_proxy", f"record_test_flow failed: {e}")
@@ -2567,6 +2620,7 @@ requests.get("https://example.com",
       <button class="btn" style="padding:3px 10px;font-size:13px" onclick="clearFlow()">Clear flow</button>
       <button class="btn" style="padding:3px 10px;font-size:13px;border-color:#0ea5e9;color:#7dd3fc" onclick="reclassifyFlow()" title="Force re-running auth_milestones.classify on every row of this session — useful after editing config/sites.yaml or to backfill rows captured before the classifier shipped.">Reclassify milestones</button>
       <button class="btn" style="padding:3px 10px;font-size:13px" onclick="submitFlowToRag()" title="Uses checked rows if any, else the marker range">Send to RAG</button>
+      <button class="btn" style="padding:3px 10px;font-size:13px;border-color:#ef4444;color:#fca5a5" onclick="clearRagFindings()" title="Clear all findings you've imported into the built-in RAG engine via 'Send to RAG'. Captured flow traces are NOT deleted — they still auto-surface in RAG.">Clear RAG data</button>
       <select id="analyze-preset" class="cfg-input" style="width:auto;border-color:#a855f7;color:#c4b5fd;background:#3b1f6e" title="Pick the analysis prompt the LLM will use">
         <option value="general">Analyze: General</option>
         <option value="sso">Analyze: SSO (identify protocol + stages)</option>
@@ -2786,6 +2840,11 @@ let devicesCache=[], devicePresets=[];
 let phantomWs=null, phantomRunning=false, phantomLogLines=[];
 let allLogs=[], authProxyLogs=[], stats={tok:0,ck:0,au:0,inp:0};
 let flowBySession={}, flowSelectedSid='', flowSelectedSeq=null, taintValues=[];
+// Sessions that have captured flow but aren't active browser sessions —
+// synthetic dashboard-test traces (test_<tool>_<site_id>) and ended sessions.
+// Seeded from the init `flow_sessions` payload and kept current as live flow
+// rows arrive, so the Flow Trace dropdown lists them alongside browser sessions.
+let flowSessionMeta={}; // sid -> {sid,count,browser,tool,site_id}
 // Cross-tab "pinned" session — set explicitly whenever the operator
 // picks a session from a Flow Trace or Index dropdown. Both tabs
 // honour this on render so switching between tabs doesn't reset
@@ -2894,6 +2953,18 @@ function _idxFormatTs(t){
 }
 // Common label builder — "hostname · user@example.com · HH:MM"
 function sessionLabel(sid, maxHost){
+  // Synthetic dashboard-test traces: test_<tool>_<site_id>. tool is a fixed
+  // set so the match is unambiguous even when the site_id itself has
+  // underscores. Render as "🧪 <tool> · <site>" with the credential's host /
+  // username when we can resolve it, else the raw site id.
+  const tm=sid.match(/^test_(ropc|token|adopat|aaa|graph)_(.*)$/);
+  if(tm){
+    const toolLabel={ropc:'ROPC',token:'v1+v2 token',adopat:'ADO PAT',aaa:'AAA token',graph:'Graph test'}[tm[1]]||tm[1];
+    const siteId=tm[2]; let site=siteId;
+    const sc=(sitesCache||[]).find(x=>x.id===siteId);
+    if(sc&&sc.data){try{site=new URL(sc.data.login_url).hostname}catch(e){} if(sc.data.username)site+=' · '+sc.data.username;}
+    return `🧪 ${toolLabel} · ${site}`;
+  }
   const s=knownSessions[sid]||{};
   let host=sid.slice(0,maxHost||32);
   try{host=new URL(s.login_url).hostname}catch(e){}
@@ -3185,7 +3256,15 @@ function exportTab(){const logs=currentTab==='all'?allLogs:currentTab==='auth-pr
 // ── Flow Trace ──
 function refreshFlowSessionList(){
   const sel=document.getElementById('flow-sid-select');
-  const sids=Object.keys(knownSessions);
+  // Union: active browser sessions + any session that has captured flow
+  // (synthetic dashboard-test traces, ended sessions). Without the union the
+  // ROPC / token / ADO PAT / AAA / Graph test traces are recorded but never
+  // selectable here to send to the LLM.
+  const sids=[...new Set([
+    ...Object.keys(knownSessions),
+    ...Object.keys(flowSessionMeta),
+    ...Object.keys(flowBySession),
+  ])];
   if(!sids.length){sel.innerHTML='<option value="">(no active sessions)</option>';document.getElementById('flow-timeline').innerHTML='<div style="padding:20px;color:#78859b;font-size:13px;text-align:center">Start a browser session to capture flow.</div>';return}
   // Pick the default in priority order:
   //   1. The pinned cross-tab session (set whenever the operator
@@ -3790,6 +3869,10 @@ function detectSuggestedTaints(){
   return Object.entries(seen).filter(([,n])=>n>=1).sort((a,b)=>b[1]-a[1]).map(([v])=>v);
 }
 function clearFlow(){send({cmd:'clear_flow',session_id:flowSelectedSid});flowBySession[flowSelectedSid]=[];renderFlow()}
+function clearRagFindings(){
+  if(!confirm('Clear ALL findings imported into the built-in RAG engine (everything sent via "Send to RAG")?\n\nCaptured flow traces are NOT deleted — they still auto-surface in RAG.'))return;
+  if(!send({cmd:'clear_rag_findings'}))alert('Dashboard is not connected (WebSocket down). Reload and try again.');
+}
 function reclassifyFlow(){
   if(!flowSelectedSid){alert('Pick a session first');return}
   send({cmd:'reclassify_flow',session_id:flowSelectedSid});
@@ -7594,7 +7677,7 @@ function renderTokens(tokens,siteId){
         <span style="color:#cbd5e1;flex:1;font-size:13px;word-break:break-all" title="${esc(val)}">${esc(preview)}</span>
         <button class="btn" style="padding:2px 6px;font-size:13px;white-space:nowrap" onclick="copyToClipboard(decodeURIComponent('${encodeURIComponent(val)}'),this)">Copy</button>
         <button class="btn" style="padding:2px 6px;font-size:13px;white-space:nowrap;background:#1e3a5f" onclick="copyToClipboard('Bearer '+decodeURIComponent('${encodeURIComponent(val)}'),this)">Bearer</button>
-        <button class="btn" style="padding:2px 6px;font-size:13px;white-space:nowrap;background:#065f46" onclick="testGraphDirect(decodeURIComponent('${encodeURIComponent(val)}'),this)">Graph</button>
+        <button class="btn" style="padding:2px 6px;font-size:13px;white-space:nowrap;background:#065f46" onclick="testGraphDirect(decodeURIComponent('${encodeURIComponent(val)}'),this,'${siteId}')">Graph</button>
       </div>`;
     }
     for(const f of refreshFields){
@@ -7615,7 +7698,7 @@ function renderTokens(tokens,siteId){
 
   let h='<div style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><div style="color:#4ade80;font-weight:bold">Tokens ('+sorted.length+')</div>';
   if(latest){
-    h+=`<button class="btn" style="padding:3px 10px;font-size:13px;background:#065f46" onclick="testGraphDirect(decodeURIComponent('${encodeURIComponent(latest)}'),this)">Test Graph /me</button>`;
+    h+=`<button class="btn" style="padding:3px 10px;font-size:13px;background:#065f46" onclick="testGraphDirect(decodeURIComponent('${encodeURIComponent(latest)}'),this,'${siteId}')">Test Graph /me</button>`;
     h+=`<span id="graph-quick-result" style="font-size:13px"></span>`;
   }
   h+='</div>';
@@ -8356,7 +8439,7 @@ function tokenToggle(siteId){
     document.getElementById('tok-pass-'+siteId)?.focus();
   }
 }
-function _tokenLegHtml(label,r){
+function _tokenLegHtml(label,r,siteId){
   if(!r){return `<div style="flex:1;min-width:240px;background:#0f0a0a;padding:8px;border-radius:4px;border:1px solid #3f1d1d"><div style="color:#cbd5e1;font-size:12px">${label}</div><div style="color:#f87171;margin-top:4px">no result</div></div>`}
   const url=r.url||'';
   const head=`<div style="color:#cbd5e1;font-size:12px;margin-bottom:2px">${label}</div><code style="color:#78859b;font-size:10px;word-break:break-all">${esc(url)}</code>`;
@@ -8375,7 +8458,7 @@ function _tokenLegHtml(label,r){
     <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
       <code style="color:#cbd5e1;font-size:10px;flex:1;background:#020617;padding:3px 6px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(tok.slice(0,60))}…</code>
       <button class="btn" style="padding:1px 8px;font-size:11px;background:#1e3a5f" data-tok="${esc(tok)}" onclick="copyToClipboard(this.dataset.tok,this)">Copy</button>
-      <button class="btn" style="padding:1px 8px;font-size:11px;background:#065f46" data-tok="${esc(tok)}" onclick="testGraphDirect(this.dataset.tok,this)">Graph</button>
+      <button class="btn" style="padding:1px 8px;font-size:11px;background:#065f46" data-tok="${esc(tok)}" onclick="testGraphDirect(this.dataset.tok,this,'${siteId||''}')">Graph</button>
     </div></div>`;
 }
 async function tokenRun(siteId){
@@ -8391,8 +8474,8 @@ async function tokenRun(siteId){
     const d=await r.json();
     if(d.error&&!d.v1&&!d.v2){out.innerHTML='<div style="color:#f87171">'+esc(d.error)+'</div>';return}
     out.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch">
-      ${_tokenLegHtml('v1 · /oauth2/token',d.v1)}
-      ${_tokenLegHtml('v2 · /oauth2/v2.0/token',d.v2)}
+      ${_tokenLegHtml('v1 · /oauth2/token',d.v1,siteId)}
+      ${_tokenLegHtml('v2 · /oauth2/v2.0/token',d.v2,siteId)}
     </div>`;
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
 }
@@ -8429,7 +8512,7 @@ async function ropcRun(siteId){
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
         <code style="color:#cbd5e1;font-size:11px;flex:1;background:#020617;padding:4px 8px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(tok.slice(0,80))}…</code>
         <button class="btn" style="padding:2px 10px;font-size:12px;background:#1e3a5f" data-tok="${esc(tok)}" onclick="copyToClipboard(this.dataset.tok,this)">Copy</button>
-        <button class="btn" style="padding:2px 10px;font-size:12px;background:#065f46" data-tok="${esc(tok)}" onclick="testGraphDirect(this.dataset.tok,this)">Test Graph</button>
+        <button class="btn" style="padding:2px 10px;font-size:12px;background:#065f46" data-tok="${esc(tok)}" onclick="testGraphDirect(this.dataset.tok,this,'${siteId}')">Test Graph</button>
       </div>`;
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
 }
@@ -8540,12 +8623,14 @@ async function adoPatDeviceCode(siteId){
 }
 
 // ── WebSocket: Control (config, sessions, credentials) ──
-async function testGraphDirect(token,btn){
-  // Inline graph test — show result next to the button
+async function testGraphDirect(token,btn,siteId){
+  // Inline graph test — show result next to the button. When a siteId is in
+  // scope (token panels), pass it so the request/response lands on that
+  // credential's 🧪 Graph flow trace, selectable in Flow Trace / send-to-LLM.
   const origText=btn.textContent;
   btn.textContent='...';btn.disabled=true;
   try{
-    const r=await apiFetch('/api/test-graph',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+    const r=await apiFetch('/api/test-graph',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,site_id:siteId||''})});
     const d=await r.json();
     if(d.error){btn.textContent='Error';btn.style.background='#991b1b';setTimeout(()=>{btn.textContent=origText;btn.style.background='#065f46';btn.disabled=false},3000);
       // Show detail in a nearby element or alert
@@ -8589,7 +8674,9 @@ function connectControl(){
       configCache=msg.config||{};renderConfig();renderPresets();renderUpstreamHost();renderNoisyExts();
       _paintHideSidBtn();
       savedSessions=msg.saved_sessions||[];sitesCache=msg.sites||[];
+      flowSessionMeta={};for(const f of (msg.flow_sessions||[]))flowSessionMeta[f.sid]=f;
       renderSessions(msg.sessions||{});renderTabs();
+      if(currentTab==='flow')refreshFlowSessionList();
       if(msg.proxy_status){proxyStatus=msg.proxy_status;renderProxy()}
       if(msg.auth_proxy_status){authProxyStatus=msg.auth_proxy_status;renderAuthProxy()}
       if(msg.keepalive_status){keepaliveStatus=msg.keepalive_status;renderKeepalive()}
@@ -8695,6 +8782,11 @@ function connectControl(){
       const el=document.getElementById('flow-ai');
       if(el)el.innerHTML=`<div class="flow-ai"><h3>RAG submission</h3>${esc(note)}</div>`;
       document.querySelectorAll('.flow-toolbar .btn').forEach(b=>{if(/Sending/.test(b.textContent)){b.disabled=false;b.textContent='Send to RAG'}});
+    }
+    else if(msg.type==='rag_cleared'){
+      const note=msg.ok?`Cleared ${msg.cleared} imported finding(s). Captured flow traces still auto-surface in RAG.`:`Clear failed: ${msg.error||'unknown'}`;
+      const el=document.getElementById('flow-ai');
+      if(el)el.innerHTML=`<div class="flow-ai"><h3>RAG</h3>${esc(note)}</div>`;
     }
     else if(msg.type==='captured_proxy_list'){
       capturedHosts=msg.hosts||[];
@@ -8840,12 +8932,22 @@ function connectData(){
     }
     else if(msg.type==='log')addLog(msg);
     else if(msg.type==='flow'){
-      const sid=msg.session_id;if(!flowBySession[sid])flowBySession[sid]=[];
+      const sid=msg.session_id;
+      const _isNewSid=!flowBySession[sid];
+      if(_isNewSid)flowBySession[sid]=[];
+      // First row for a session the dropdown doesn't know about yet (e.g. a
+      // just-started dashboard-test trace) — record its metadata and refresh
+      // the selector so it becomes selectable immediately.
+      if(_isNewSid && !knownSessions[sid] && !flowSessionMeta[sid]){
+        flowSessionMeta[sid]={sid,count:0,browser:false,tool:msg.tool||'',site_id:msg.site_id||''};
+        if(currentTab==='flow')refreshFlowSessionList();
+      }
       // Track whether this session previously had a DRS Bearer so
       // we only re-render the selector dropdown on transition (not
       // every subsequent row that also carries one).
       const _hadDrs=_sessionHasDrsToken(sid);
       flowBySession[sid].push(msg);
+      if(flowSessionMeta[sid])flowSessionMeta[sid].count=flowBySession[sid].length;
       if(currentTab==='flow' && !_hadDrs && _drsTokenFromEntry(msg)){
         refreshFlowSessionList();
       }

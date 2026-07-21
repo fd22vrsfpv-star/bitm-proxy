@@ -121,8 +121,12 @@ class BurpExtender(IBurpExtender, ITab):
         fp.setLayout(BoxLayout(fp, BoxLayout.Y_AXIS))
         fp.setBorder(BorderFactory.createTitledBorder("Selection Filters"))
         row1 = JPanel(FlowLayout(FlowLayout.LEFT))
-        row1.add(JLabel("Target IP:"))
+        row1.add(JLabel("Target / name:"))
         self._import_target = JTextField("", 20)
+        self._import_target.setToolTipText(
+            "Filter by host/IP, URL, or finding name. Dashboard-test traces "
+            "carry the tool in their title, so 'ADO PAT' or 'adopat' isolates "
+            "just that trace.")
         row1.add(self._import_target)
         row1.add(JLabel("Severity:"))
         self._import_severity = JComboBox(["all", "critical", "high", "medium", "low", "info"])
@@ -1134,15 +1138,22 @@ class BurpExtender(IBurpExtender, ITab):
 
     # ── Follow-Up Queue ──
     def _filter_by_target(self, items):
-        """Filter items by the Target IP/hostname field if set."""
+        """Filter queue items by the Target/name field if set. Matches the
+        typed text against the target, URL, title AND id — so typing e.g.
+        "ADO PAT" (or "adopat") isolates a single dashboard-test trace even
+        though every such trace shares the login.microsoftonline.com URL."""
         target_filter = self._import_target.getText().strip().lower()
         if not target_filter:
             return items
         filtered = []
         for item in items:
-            item_target = (item.get("target") or "").lower()
-            item_url = (item.get("url") or "").lower()
-            if target_filter in item_target or target_filter in item_url:
+            hay = " ".join([
+                (item.get("target") or ""),
+                (item.get("url") or ""),
+                (item.get("title") or ""),
+                (item.get("id") or ""),
+            ]).lower()
+            if target_filter in hay:
                 filtered.append(item)
         return filtered
 

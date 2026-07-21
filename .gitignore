@@ -40,6 +40,7 @@ config/slack_*.txt
 # Presentation decks + their assets — kept out of the repo (distributed
 # separately). Covers the root and docs/ copies.
 DEFCON-RTV-2025-slides.*
+docs/Grapnel-passkeys-RTV.*
 docs/IGotIn-NowWhat*.pptx
 
 # Screenshots: ignore everything (raw dashboard captures carry lab-tenant

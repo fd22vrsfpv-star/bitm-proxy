@@ -62,8 +62,16 @@ def _all_findings() -> list[dict]:
 def _match(finding: dict, target: str, severity: str, source: str,
            engagement_id: str) -> bool:
     if target:
-        url = finding.get("url", "")
-        if target not in url:
+        # Match the target substring against the URL *and* the finding's
+        # name/title/session_id (all case-insensitive). Every dashboard-test
+        # trace shares the same login.microsoftonline.com URL, so a URL-only
+        # filter can't separate e.g. ADO PAT from ROPC — but the title now
+        # carries the tool ("🧪 ADO PAT · …"), so typing "ADO PAT" (or the
+        # "adopat" session-id token) in the Burp Target field isolates it.
+        t = target.lower()
+        hay = " ".join(str(finding.get(k, "")) for k in
+                       ("url", "name", "title", "session_id")).lower()
+        if t not in hay:
             return False
     if severity and severity != "all":
         if finding.get("severity", "info") != severity:
@@ -211,10 +219,12 @@ async def import_findings_exchange(body: dict):
                            body.get("source", "external"))
 
 
-@app.post("/findings/clear")
-async def findings_clear():
-    """Drop all imported/persisted findings (reset). Live captured flows in
-    _session_flows are unaffected — they rebuild into findings on demand."""
+def clear_imported_findings() -> int:
+    """Drop all imported/persisted findings (reset). Returns how many were
+    cleared. Live captured flows in _session_flows are unaffected — they
+    rebuild into findings on demand. Callable in-process (the dashboard's
+    'Clear RAG data' button, which shares this event loop) and from the
+    /findings/clear HTTP route."""
     n = len(_imported_findings)
     _imported_findings.clear()
     try:
@@ -222,7 +232,12 @@ async def findings_clear():
     except Exception:
         pass
     append_log("info", "rag_api", f"Cleared {n} imported findings")
-    return {"cleared": n}
+    return n
+
+
+@app.post("/findings/clear")
+async def findings_clear():
+    return {"cleared": clear_imported_findings()}
 
 
 # ── Burp extension: Follow-Up Queue + tunnel nodes ──────────────────────────
