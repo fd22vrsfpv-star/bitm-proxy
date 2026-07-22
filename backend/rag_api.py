@@ -43,9 +43,20 @@ except Exception:
 
 
 def _all_findings() -> list[dict]:
-    """Build findings from all captured session flows, plus imports."""
+    """Build findings from all captured session flows, plus imports.
+
+    An explicitly-imported finding (pushed via the dashboard's 'Send to RAG')
+    SUPERSEDES the auto-built finding for the same session — so a sent trace
+    shows up exactly once, not duplicated alongside its auto-exposed copy.
+    Without this, every 'Send to RAG' produced a second identical finding
+    (and a duplicate row in the Burp queue) because the session is also
+    surfaced automatically from _session_flows."""
+    imported = list(_imported_findings)
+    imported_sids = {f.get("session_id") for f in imported if f.get("session_id")}
     findings: list[dict] = []
     for session_id, buf in _session_flows.items():
+        if session_id in imported_sids:
+            continue
         entries = list(buf)
         if not entries:
             continue
@@ -55,7 +66,7 @@ def _all_findings() -> list[dict]:
         except Exception as e:
             append_log("warn", "rag_api",
                        f"finding build failed for {session_id}: {e}")
-    findings.extend(_imported_findings)
+    findings.extend(imported)
     return findings
 
 
@@ -199,6 +210,13 @@ def import_findings(findings: list, source: str = "external") -> dict:
             continue
         f.setdefault("source", source)
         f.setdefault("captured_at", time.time())
+        sid = f.get("session_id")
+        if sid:
+            # Re-sending the same session updates in place rather than piling
+            # up duplicate findings (each 'Send to RAG' otherwise appended a
+            # fresh copy).
+            _imported_findings[:] = [x for x in _imported_findings
+                                     if x.get("session_id") != sid]
         _imported_findings.append(f)
         imported += 1
     if imported:
