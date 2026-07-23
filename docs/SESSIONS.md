@@ -670,6 +670,28 @@ to `tokens[]` on the credential record (with
 `source_url=Get-AAATokenFromAzLogin`) so the existing AAA runner can use
 them downstream.
 
+**User vs service-principal login (`-ServicePrincipal`)** —
+`Get-AAATokenFromAzLogin` maps to `Connect-AzAccount`, and the `-ServicePrincipal`
+switch changes what `-User`/`-Password` *mean*:
+
+| Mode | `-User` | `-Password` | Switch |
+|---|---|---|---|
+| **User login** (default — captured creds) | user UPN / email | user password | *(none)* |
+| **Service-principal login** | app (client) ID | client secret | `-ServicePrincipal` |
+
+Captured BITM creds are **user** email/password, so the correct command is a
+plain user login with **no** `-ServicePrincipal`:
+
+```powershell
+Get-AAATokenFromAzLogin -User "victim@tenant.onmicrosoft.com" -Password "…" -TenantId "…"
+```
+
+Passing `-ServicePrincipal` with a user's email makes `Connect-AzAccount` treat
+the email as an application ID and fail. The login panel's **-ServicePrincipal
+(app login)** checkbox therefore defaults **off**; tick it only when you hold an
+app's client ID + secret. (The copyable `Get-AAATokenFromAzLogin` snippet on the
+card omits the switch for the same reason.)
+
 **Device-code login (MFA-capable alternative, 1.35.0)** — the AAA login
 panel has a **Method** selector: *Password* (Connect-AzAccount, above) or
 *Device code*. Device code runs the OAuth2 device-authorization grant for a
@@ -733,9 +755,10 @@ same class of coverage gap as ROPC and Phantom Join.
 
 A **Method** selector (1.33.0) picks how the ADO-audience token is acquired:
 **ROPC** (default — password grant; fails on an MFA tenant), **Device code**
-(interactive OAuth2 device-authorization grant — satisfies MFA/CA, the path
-that works when ROPC is blocked), or **Captured token** (paste an existing
-ADO-audience token). All three converge on the same PAT creation.
+(interactive OAuth2 device-authorization grant — satisfies *basic* MFA, but can
+still be refused by CA on the ADO resource; see the callout below), or
+**Captured token** (paste an existing ADO-audience token). All three converge on
+the same PAT creation.
 
 The token must have the **Azure DevOps audience** —
 `aud = 499b84ac-1321-427f-aa17-267ca6975798` (the ADO first-party resource);
@@ -747,6 +770,20 @@ token" field is only for a token you already hold); a captured `dev.azure.com`
 BITM session; a phantom PRT exchange
 (`roadtx prtauth -f roadtx.prt -r 499b84ac-1321-427f-aa17-267ca6975798`); or
 `Get-AzAccessToken -ResourceUrl 499b84ac-1321-427f-aa17-267ca6975798`.
+
+**When Device code also fails (CA on the ADO resource) — use the phantom PRT.**
+Device code satisfies *basic* MFA, but it does **not** get past a Conditional
+Access policy on the Azure DevOps resource that demands **authentication
+strength** (phishing-resistant MFA) or a **compliant/joined device** — the ADO
+token request comes back `AADSTS50076`/`AADSTS53003` even after a clean
+device-code sign-in. This is the same coverage boundary the demo rides:
+device-code only walks past CA when the *target* resource is uncovered (DRS is;
+ADO usually isn't). The way through is the **Phantom Join** chain — its PRT
+carries device claims that satisfy device-based CA, so exchange the PRT for an
+ADO-audience token
+(`roadtx prtauth -f roadtx.prt -r 499b84ac-1321-427f-aa17-267ca6975798`) and
+paste it into the **Captured token** method. `/api/ado-devicecode/poll` now
+detects these CA codes and returns that guidance inline.
 
 | Piece | Where |
 |---|---|

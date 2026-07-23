@@ -346,7 +346,7 @@ async def acquire_token_via_az_login(
     user: str,
     password: str,
     tenant_id: str,
-    service_principal: bool = True,
+    service_principal: bool = False,
     persist: bool = True,
 ) -> dict[str, Any]:
     """Run Get-AAATokenFromAzLogin and capture $Script:AAAtoken.
