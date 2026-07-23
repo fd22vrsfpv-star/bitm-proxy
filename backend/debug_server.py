@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.45.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.45.1")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1882,6 +1882,8 @@ async def api_create_ado_pat(body: dict):
                 "Enable in Configuration."}
     import datetime
     import httpx  # used by step 3 (PAT creation POST)
+
+    _sid = (body.get("site_id") or "").strip()  # used by step 3's flow recording
 
     # --- 1. acquire an ADO-scoped AAD token -------------------------------
     tok_res = await _acquire_ado_token(body)
