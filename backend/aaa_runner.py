@@ -70,17 +70,80 @@ def script_present() -> tuple[bool, str]:
                    f"sites.yaml.")
 
 
+# Parsed param map cached against the script's (path, mtime) so the ~3k-line
+# vendored script is parsed once and re-parsed only if it changes on disk.
+_params_cache: dict[tuple, dict[str, list[dict]]] = {}
+_PARAM_ENTRY_RE = re.compile(r'((?:\[Parameter\([^)]*\)\]\s*)*)\[(\w+)\]\s*\$(\w+)')
+
+
+def _parse_function_params(script_text: str) -> dict[str, list[dict]]:
+    """Best-effort parse of every `function NAME { ... Param( ... ) }` block
+    into {name: [{name, switch, mandatory, set}]}. Regex against the
+    well-structured vendored script — NOT a general PowerShell parser; used
+    only to pre-fill the dashboard's args template, never to gate execution."""
+    out: dict[str, list[dict]] = {}
+    heads = list(re.finditer(r'(?m)^function\s+([A-Za-z0-9\-]+)\s*\{', script_text))
+    for i, h in enumerate(heads):
+        name = h.group(1)
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(script_text)
+        body = script_text[h.end():end]
+        pm = re.search(r'(?is)Param\s*\((.*?)\n\s*\)', body)
+        params: list[dict] = []
+        if pm:
+            for m in _PARAM_ENTRY_RE.finditer(pm.group(1)):
+                attrs, ptype, pname = m.group(1), m.group(2).lower(), m.group(3)
+                sm = re.search(r"ParameterSetName\s*=\s*'([^']*)'", attrs)
+                params.append({
+                    "name": pname,
+                    "switch": ptype == "switch",
+                    "mandatory": bool(re.search(r'Mandatory\s*=\s*\$true', attrs, re.I)),
+                    "set": sm.group(1) if sm else "",
+                })
+        out[name] = params
+    return out
+
+
+def all_function_params() -> dict[str, list[dict]]:
+    """Parsed params for every function in the vendored script, mtime-cached."""
+    p = _script_path()
+    try:
+        key = (str(p), p.stat().st_mtime)
+    except OSError:
+        return {}
+    cached = _params_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    parsed = _parse_function_params(text)
+    _params_cache.clear()
+    _params_cache[key] = parsed
+    return parsed
+
+
 def info() -> dict[str, Any]:
     """Dashboard probe — used by the AAA button to decide whether to enable
     itself and which functions to list."""
     cfg = site_rules.aaa_runner_config()
     pwsh_ok, pwsh_msg = is_pwsh_available()
     script_ok, script_msg = script_present()
+    allowed = list(cfg["allowed_functions"])
+    # Params for the allowlisted recon functions plus the token-getter, so the
+    # dashboard can auto-fill the args field (mandatory params pre-filled,
+    # optional ones surfaced in the tooltip) and the run actually works.
+    fparams: dict[str, list[dict]] = {}
+    if script_ok:
+        _all = all_function_params()
+        wanted = set(allowed) | {"Get-AAATokenFromAzLogin"}
+        fparams = {k: v for k, v in _all.items() if k in wanted}
     return {
         "ready": pwsh_ok and script_ok,
         "pwsh": {"ok": pwsh_ok, "detail": pwsh_msg},
         "script": {"ok": script_ok, "detail": script_msg},
-        "allowed_functions": list(cfg["allowed_functions"]),
+        "allowed_functions": allowed,
+        "function_params": fparams,
         "timeout_seconds": cfg["timeout_seconds"],
     }
 
