@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.41.3")
+app = FastAPI(title="BITM Proxy Debug", version="1.42.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1675,6 +1675,78 @@ async def api_ado_devicecode_poll(body: dict):
             "ca_blocked": ca_blocked}
 
 
+async def _ado_token_from_phantom_prt(prt_path: str = "") -> dict:
+    """Exchange a Phantom-Join PRT for an Azure DevOps-audience token via
+    `roadtx prtauth`. The PRT carries device claims that satisfy device-based
+    Conditional Access — the path that works when ROPC / device-code are
+    MFA/CA-blocked on the ADO resource. Uses the newest
+    $DATA_DIR/phantom/*/*/roadtx.prt unless an explicit path is supplied."""
+    import asyncio as _a
+    import json as _j
+    import re
+    import shutil as _sh
+    from pathlib import Path as _P
+    from backend.paths import data_dir
+    if prt_path:
+        prt = _P(prt_path)
+    else:
+        root = data_dir() / "phantom"
+        cands = (sorted(root.glob("*/*/roadtx.prt"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+                 if root.exists() else [])
+        prt = cands[0] if cands else None
+    if not prt or not prt.exists():
+        return {"ok": False, "error": ("No phantom PRT found. Run Phantom Join "
+                "first (it saves roadtx.prt under $DATA_DIR/phantom/<run>/), or "
+                "paste an ADO-audience token via the 'Captured token' method.")}
+    rx = _sh.which("roadtx")
+    if not rx:
+        return {"ok": False, "error": "roadtx not on PATH — install roadtools "
+                "(pip install roadtx)."}
+    work = prt.parent
+    outname = ".roadtools_auth_ado"
+    outfile = work / outname
+    try:
+        if outfile.exists():
+            outfile.unlink()
+    except OSError:
+        pass
+    cmd = [rx, "prtauth", "-f", prt.name, "-r", _ADO_RESOURCE_ID,
+           "--tokenfile", outname]
+    try:
+        proc = await _a.create_subprocess_exec(
+            *cmd, cwd=str(work),
+            stdout=_a.subprocess.PIPE, stderr=_a.subprocess.PIPE)
+        out_b, err_b = await _a.wait_for(proc.communicate(), timeout=60)
+    except _a.TimeoutError:
+        return {"ok": False, "error": "roadtx prtauth timed out (60s)"}
+    except Exception as e:
+        return {"ok": False, "error": f"roadtx prtauth failed to launch: {e}"}
+    combined = (out_b.decode("utf-8", "replace") +
+                err_b.decode("utf-8", "replace"))
+    if outfile.exists():
+        try:
+            data = _j.loads(outfile.read_text())
+        except Exception:
+            data = {}
+        tok = data.get("accessToken") or data.get("access_token") or ""
+        try:
+            outfile.unlink()  # don't leave the raw token on disk
+        except OSError:
+            pass
+        if tok:
+            append_log("info", "auth_proxy",
+                       f"ADO_PRT_TOKEN via phantom PRT {prt}")
+            return {"ok": True, "access_token": tok, "prt": str(prt)}
+    m = re.search(r"AADSTS\d+", combined)
+    hint = ("  — the PRT still lacks the claim CA wants; enrich it "
+            "(`roadtx prtenrich -f roadtx.prt`) and re-run phantom."
+            if ("50076" in combined or "53003" in combined) else "")
+    return {"ok": False, "aadsts_code": m.group(0) if m else "",
+            "error": ("PRT→ADO exchange failed. "
+                      + (combined.strip()[-400:] or "no token produced") + hint)}
+
+
 @app.post("/api/create-ado-pat")
 async def api_create_ado_pat(body: dict):
     """Mint a long-lived Azure DevOps Personal Access Token from captured
@@ -1713,6 +1785,14 @@ async def api_create_ado_pat(body: dict):
     _sid = (body.get("site_id") or "").strip()
     token = (body.get("access_token") or "").strip()
     token_source = "provided"
+    if not token and body.get("use_phantom_prt"):
+        prt_res = await _ado_token_from_phantom_prt(
+            (body.get("prt_path") or "").strip())
+        if not prt_res.get("ok"):
+            prt_res["stage"] = "phantom_prt"
+            return prt_res
+        token = prt_res["access_token"]
+        token_source = "phantom_prt"
     if not token:
         username = (body.get("username") or "").strip()
         password = body.get("password") or ""
@@ -7603,6 +7683,7 @@ function renderAdoPatPanel(d,siteId){
         <select id="adopat-method-${siteId}" class="cfg-input" style="font-size:13px;flex:1;min-width:260px" onchange="adoPatMethodChange('${siteId}')">
           <option value="ropc" selected>ROPC — password grant (current default)</option>
           <option value="devicecode">Device code — interactive, satisfies MFA</option>
+          <option value="phantomprt">Phantom PRT — exchange a roadtx.prt from a phantom run</option>
           <option value="captured">Captured token — paste an ADO-audience token</option>
         </select>
       </div>
@@ -7629,6 +7710,10 @@ function renderAdoPatPanel(d,siteId){
       </div>
       <div id="adopat-dc-${siteId}" style="display:none;color:#78859b;font-size:12px;margin-bottom:6px">
         Click <b>Start device code</b> — you'll get a code to enter at microsoft.com/devicelogin. Completing sign-in there (with MFA) yields the ADO token, then the PAT is minted automatically. This is the path that works when ROPC is CA/MFA-blocked.
+      </div>
+      <div id="adopat-prt-${siteId}" style="display:none;color:#78859b;font-size:12px;margin-bottom:6px">
+        Uses the newest <code>roadtx.prt</code> from a completed <b>Phantom Join</b> run (under <code>$DATA_DIR/phantom/</code>). Runs <code>roadtx prtauth -r 499b84ac-…</code> to trade the PRT for an ADO-audience token, then mints the PAT — the path that works when device-code / ROPC are CA-blocked on the ADO resource, because the PRT carries device claims. Optional explicit path:
+        <input id="adopat-prtpath-${siteId}" class="cfg-input" style="width:100%;margin-top:4px;font-size:12px" placeholder="blank = newest phantom PRT; or /data/phantom/&lt;run&gt;/phantom_join_&lt;ts&gt;/roadtx.prt">
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
         <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
@@ -8651,6 +8736,7 @@ function adoPatMethodChange(siteId){
   show('adopat-ropc-'+siteId, m==='ropc');
   show('adopat-captured-'+siteId, m==='captured');
   show('adopat-dc-'+siteId, m==='devicecode');
+  show('adopat-prt-'+siteId, m==='phantomprt');
   const btn=document.getElementById('adopat-go-'+siteId);
   if(btn) btn.textContent = (m==='devicecode') ? '▶ Start device code' : '▶ Create';
 }
@@ -8697,6 +8783,10 @@ function adoPatGo(siteId){
   const out=document.getElementById('adopat-result-'+siteId);
   const m=document.getElementById('adopat-method-'+siteId)?.value||'ropc';
   if(m==='devicecode') return adoPatDeviceCode(siteId);
+  if(m==='phantomprt'){
+    const pp=(document.getElementById('adopat-prtpath-'+siteId)?.value||'').trim();
+    return _adoPatCreate(siteId,{use_phantom_prt:true,prt_path:pp},'phantom PRT → roadtx prtauth → ADO token → create PAT…');
+  }
   if(m==='captured'){
     const tok=(document.getElementById('adopat-token-'+siteId)?.value||'').trim();
     if(!tok){out.innerHTML='<div style="color:#f87171">paste an ADO-audience access token</div>';return}

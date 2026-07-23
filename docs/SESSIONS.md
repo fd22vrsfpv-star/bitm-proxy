@@ -756,9 +756,13 @@ same class of coverage gap as ROPC and Phantom Join.
 A **Method** selector (1.33.0) picks how the ADO-audience token is acquired:
 **ROPC** (default — password grant; fails on an MFA tenant), **Device code**
 (interactive OAuth2 device-authorization grant — satisfies *basic* MFA, but can
-still be refused by CA on the ADO resource; see the callout below), or
-**Captured token** (paste an existing ADO-audience token). All three converge on
-the same PAT creation.
+still be refused by CA on the ADO resource; see the callout below), **Phantom
+PRT** (exchange a `roadtx.prt` from a completed Phantom Join run for an
+ADO-audience token via `roadtx prtauth`, `use_phantom_prt` →
+`_ado_token_from_phantom_prt()` picks the newest `$DATA_DIR/phantom/*/*/roadtx.prt`
+unless `prt_path` is given — the path that works when device-code/ROPC are
+CA-blocked, since the PRT carries device claims), or **Captured token** (paste an
+existing ADO-audience token). All converge on the same PAT creation.
 
 The token must have the **Azure DevOps audience** —
 `aud = 499b84ac-1321-427f-aa17-267ca6975798` (the ADO first-party resource);
