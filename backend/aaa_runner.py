@@ -148,6 +148,17 @@ def info() -> dict[str, Any]:
     }
 
 
+_ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]')
+
+
+def _strip_ansi(s: str) -> str:
+    """Strip ANSI / VT100 escape sequences. pwsh and (especially) Az.Accounts
+    emit colored error text — e.g. `\\e[31;1m` red-bold — even under
+    `-File /dev/stdin` + PlainText rendering; those bytes show up as literal
+    `[31;1m` garbage in the dashboard's plain <pre>."""
+    return _ANSI_RE.sub("", s)
+
+
 def _ps_quote(value: str) -> str:
     """Single-quote a string for PowerShell. Inside '…' the only escape
     needed is doubling embedded single quotes."""
@@ -322,8 +333,8 @@ async def run(site_id: str,
                 "error": f"failed to launch pwsh: {e}"}
 
     elapsed_ms = int((time.time() - t0) * 1000)
-    stdout = stdout_b.decode("utf-8", errors="replace")
-    stderr = stderr_b.decode("utf-8", errors="replace")
+    stdout = _strip_ansi(stdout_b.decode("utf-8", errors="replace"))
+    stderr = _strip_ansi(stderr_b.decode("utf-8", errors="replace"))
     exit_code = proc.returncode if proc.returncode is not None else -1
 
     parsed: Any = None
@@ -511,8 +522,8 @@ async def acquire_token_via_az_login(
                 "error": f"failed to launch pwsh: {e}"}
 
     elapsed_ms = int((time.time() - t0) * 1000)
-    stdout = stdout_b.decode("utf-8", errors="replace")
-    stderr = stderr_b.decode("utf-8", errors="replace")
+    stdout = _strip_ansi(stdout_b.decode("utf-8", errors="replace"))
+    stderr = _strip_ansi(stderr_b.decode("utf-8", errors="replace"))
     exit_code = proc.returncode if proc.returncode is not None else -1
 
     # Friendlier surface for the most common failure mode.
@@ -543,13 +554,13 @@ async def acquire_token_via_az_login(
             "error": ("Conditional Access requires MFA / interactive sign-in, so "
                       "Connect-AzAccount with a username+password can't get a "
                       "token here. Use a path that works on an MFA tenant: "
-                      "(1) run the AAA functions directly with a Graph token you "
-                      "already captured from the BITM session or the phantom "
-                      "chain — pick it in the AAA runner's Token dropdown; no az "
-                      "login needed. (2) Tick 'Service principal' and pass an app "
-                      "(client) ID + secret as user/password to bypass user MFA. "
-                      "(3) Get a token out-of-band via device code "
-                      "(roadtx/AADInternals -UseDeviceCode) and use that."),
+                      "(1) the 'Run via pwsh… → Device code' login below — it "
+                      "completes MFA at microsoft.com/devicelogin and needs no "
+                      "Az.Accounts. (2) Run the AAA functions directly with a "
+                      "Graph token you already captured from the BITM session or "
+                      "the phantom chain — pick it in the Token dropdown; no az "
+                      "login needed. (3) For an app identity, tick 'Service "
+                      "principal' and pass an app (client) ID + secret."),
         }
 
     token: str | None = None
