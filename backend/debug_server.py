@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.43.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.44.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1412,19 +1412,23 @@ def _flow_session_summaries() -> list[dict]:
     from backend.shared import _session_flows
     out: list[dict] = []
     for sid, buf in list(_session_flows.items()):
-        if not buf:
+        if not buf or not sid:
             continue
         first = buf[0]
         is_test = str(sid).startswith("test_") or \
             first.get("source") == "dashboard-test"
         if not is_test:
             continue
+        last = buf[-1]
         out.append({
             "sid": sid,
             "count": len(buf),
             "browser": False,
             "tool": first.get("tool", "") or "",
             "site_id": first.get("site_id", "") or "",
+            # Most-recent run's time (re-runs append to the same trace), so the
+            # Flow Trace dropdown can show when the test last ran.
+            "ts": last.get("ts_resp") or last.get("ts_req") or 0,
         })
     return out
 
@@ -3065,7 +3069,9 @@ function sessionLabel(sid, maxHost){
     const siteId=tm[2]; let site=siteId;
     const sc=(sitesCache||[]).find(x=>x.id===siteId);
     if(sc&&sc.data){try{site=new URL(sc.data.login_url).hostname}catch(e){} if(sc.data.username)site+=' · '+sc.data.username;}
-    return `🧪 ${toolLabel} · ${site}`;
+    const meta=flowSessionMeta[sid];
+    const when=meta&&meta.ts?' · '+_idxFormatTs(meta.ts):'';
+    return `🧪 ${toolLabel} · ${site}${when}`;
   }
   const s=knownSessions[sid]||{};
   let host=sid.slice(0,maxHost||32);
@@ -3366,7 +3372,7 @@ function refreshFlowSessionList(){
     ...Object.keys(knownSessions),
     ...Object.keys(flowSessionMeta),
     ...Object.keys(flowBySession),
-  ])];
+  ])].filter(Boolean);  // drop any empty-string sid → no blank rows in the list
   if(!sids.length){sel.innerHTML='<option value="">(no active sessions)</option>';document.getElementById('flow-timeline').innerHTML='<div style="padding:20px;color:#78859b;font-size:13px;text-align:center">Start a browser session to capture flow.</div>';return}
   // Pick the default in priority order:
   //   1. The pinned cross-tab session (set whenever the operator
@@ -8962,6 +8968,7 @@ function connectControl(){
     }
     else if(msg.type==='log_file_info'){logFileInfo=msg;renderLogFileInfo()}
     else if(msg.type==='flow_history'){
+      if(!msg.session_id)return;  // ignore empty-sid history — would add a blank list row
       flowBySession[msg.session_id]=msg.entries||[];
       if(currentTab==='flow'&&msg.session_id===flowSelectedSid)renderFlow();
       if(currentTab==='index'&&msg.session_id===idxSelectedSid)renderIndex();
