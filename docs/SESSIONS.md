@@ -425,6 +425,7 @@ a faint left rule.
 | `upstream_proxy_host` | `127.0.0.1:3128` | The upstream proxy endpoint. |
 | `enable_token_testing` | `true` | Enables the "test captured token" buttons (Test Graph, Test ROPC, the v1+v2 `/token` test, Create ADO PAT). |
 | `default_tenant_id` | `""` | Prefills the tenant field in the ROPC / `/token` / ADO-PAT / AAA tools when set. |
+| `default_ado_org` | `""` | Prefills the **ADO org** field on every Captured Data → ADO PAT panel (Settings → Azure / ADO defaults). Empty leaves it blank → auto-discover via the vssps accounts API. |
 | `allow_drs_replay` | `false` | Gates the DRS-replay feature (`/api/devices/drs-analyze-token`, `/api/devices/drs-register-from-token`, `/api/devices/drs-credentials*`) — register a device directly from a captured DRS token. |
 | `prefer_push` | `false` | Auto-click MS's "Approve a request on my Microsoft Authenticator app" tile (`[data-value="PhoneAppNotification"]`) on the sign-in method picker. Use when MFA is configured with Authenticator push and the operator has the phone. |
 | *(TAP → password, always-on)* | — | On MS's "Enter Temporary Access Pass" screen the hosted session prefers the password option when the account still offers it (a human can complete a password in the BITM session; a TAP is an out-of-band code we don't hold). If no password option is available it leaves the TAP prompt and proceeds. No config key — a no-op unless the TAP screen renders; logged under `auth`. (1.29.0) |

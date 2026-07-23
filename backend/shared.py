@@ -578,6 +578,11 @@ _config: dict[str, Any] = {
     # leaves a `<TENANT_ID>` placeholder in the snippet — copy still
     # works, the operator just edits the placeholder before running.
     "default_tenant_id": "",
+    # Default Azure DevOps organization. Pre-fills the ADO org field on the
+    # Captured Data → ADO PAT panel so the operator sets it once (Settings)
+    # instead of per-credential. Empty leaves the field blank (auto-discover
+    # via the vssps accounts API on Create / List ADO orgs).
+    "default_ado_org": "",
     # Master gate for the Phantom Join feature (:8092 → Phantom tab).
     # Off by default. When on, the dashboard exposes a form that
     # spawns `tools/phantom_runner.py` (which drives roadtx /
