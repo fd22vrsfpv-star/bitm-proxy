@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.40.2")
+app = FastAPI(title="BITM Proxy Debug", version="1.40.3")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -7452,12 +7452,14 @@ function renderAaaTokenSnippet(d,siteId){
       <button class="btn" style="padding:2px 10px;font-size:12px;background:#1e3a5f"
               data-cmd="${esc(cmdCopy)}"
               onclick="copyToClipboard(this.dataset.cmd,this)">Copy command</button>
-      <button class="btn" style="padding:2px 10px;font-size:12px;background:#3f1d1d;border-color:#7f1d1d;color:#fecaca"
-              onclick="aaaLoginToggle('${siteId}')"
-              title="Run via pwsh — Connect-AzAccount + Get-AzAccessToken — and stash the token in credentials">Run via pwsh…</button>
       ${notes?`<span style="font-size:11px;color:#78859b">${notes}</span>`:''}
     </div>
     <pre style="background:#0a0a14;padding:8px;border-radius:4px;color:#cbd5e1;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:0">${esc(cmdShown)}</pre>
+    <div style="margin-top:6px">
+      <button class="btn" style="padding:3px 12px;font-size:12px;background:#3f1d1d;border-color:#7f1d1d;color:#fecaca"
+              onclick="aaaLoginToggle('${siteId}')"
+              title="Run via pwsh — Connect-AzAccount + Get-AzAccessToken — and stash the token in credentials">Run via pwsh… (acquire &amp; stash a token)</button>
+    </div>
     <div id="aaa-login-${siteId}" style="display:none;margin-top:8px;background:#0a0a14;padding:10px;border-radius:4px;border:1px solid #3f1d1d">
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
         <label style="color:#94a3b8;font-size:13px;min-width:64px">Method</label>
