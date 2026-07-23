@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.41.2")
+app = FastAPI(title="BITM Proxy Debug", version="1.41.3")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -8357,13 +8357,14 @@ function aaaFnChange(siteId){
   const q=s=>String(s).replace(/'/g,"''");
   if(fn==='Get-AAATokenFromAzLogin'){
     const t=q(sel.dataset.tid||'');
-    // -User and -TenantId are seeded from the captured session; the captured
-    // password is applied at Run (see aaaRunTokenGetter) rather than shown in
-    // cleartext here. Add -Password '…' to override.
-    argsEl.value=`-User '${q(capUser)}' -TenantId '${t}'`;
+    // -User and -TenantId are seeded from the captured session. A captured
+    // password is applied at Run (kept out of the visible args box); when
+    // none was captured, show an empty -Password '' so the operator is
+    // prompted to fill it in.
+    argsEl.value=`-User '${q(capUser)}' -TenantId '${t}'`+(sel.dataset.pass?'':" -Password ''");
     argsEl.title=(sel.dataset.pass
       ? "Captured password is used automatically at Run — add -Password '…' to override. "
-      : "No captured password on this credential — add -Password '…'. ")
+      : "No captured password on this credential — fill the -Password '…'. ")
       + "USER login (captured creds) — do NOT add -ServicePrincipal (that's for an app client-id + secret). Run routes to /api/aaa/login.";
     return;
   }
