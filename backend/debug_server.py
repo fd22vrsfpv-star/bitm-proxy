@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.46.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.46.1")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1896,6 +1896,11 @@ async def api_create_ado_pat(body: dict):
 
     # --- 2. resolve the target org ----------------------------------------
     organization = (body.get("organization") or "").strip()
+    if not organization:
+        # Fall back to the configured default (Settings → Azure / ADO defaults)
+        # before auto-discovering, so API/external callers that bypass the
+        # dashboard panel still honor `default_ado_org`.
+        organization = str(_gcv("default_ado_org", "") or "").strip()
     discovered_orgs: list[str] = []
     if not organization:
         disc = await _discover_ado_orgs(token, token_source)
