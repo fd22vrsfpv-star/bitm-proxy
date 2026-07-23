@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.44.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.45.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1751,6 +1751,104 @@ async def _ado_token_from_phantom_prt(prt_path: str = "") -> dict:
                       + (combined.strip()[-400:] or "no token produced") + hint)}
 
 
+async def _acquire_ado_token(body: dict) -> dict:
+    """Acquire an ADO-audience (499b84ac-…) AAD token from the request body by
+    the same methods the ADO PAT flow uses: caller-supplied `access_token`, a
+    Phantom PRT exchange (`use_phantom_prt`), or a ROPC username+password grant.
+    Returns {"ok":True,"token":..,"token_source":..}, or the failure dict from
+    the underlying method (carrying "stage": phantom_prt / ropc) verbatim so the
+    UI surfaces the AADSTS code as the finding."""
+    _sid = (body.get("site_id") or "").strip()
+    token = (body.get("access_token") or "").strip()
+    if token:
+        return {"ok": True, "token": token, "token_source": "provided"}
+    if body.get("use_phantom_prt"):
+        prt_res = await _ado_token_from_phantom_prt((body.get("prt_path") or "").strip())
+        if not prt_res.get("ok"):
+            prt_res["stage"] = "phantom_prt"
+            return prt_res
+        return {"ok": True, "token": prt_res["access_token"], "token_source": "phantom_prt"}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not username or not password:
+        return {"ok": False,
+                "error": "username and password required (or supply access_token)"}
+    tenant = (body.get("tenant_id") or "organizations").strip()
+    client_id = (body.get("client_id") or _AZ_CLI_CLIENT_ID).strip()
+    ropc = await _ropc_grant(username, password, tenant, client_id,
+                             f"{_ADO_RESOURCE_ID}/.default", site_id=_sid, tool="adopat")
+    if not ropc.get("ok"):
+        # Surface the ROPC failure verbatim (incl. aadsts_code) as the finding.
+        ropc["stage"] = "ropc"
+        return ropc
+    return {"ok": True, "token": ropc.get("access_token") or "", "token_source": "ropc"}
+
+
+async def _discover_ado_orgs(token: str, token_source: str = "") -> dict:
+    """Resolve the Azure DevOps organizations for the account behind an
+    ADO-audience token via the vssps profile + accounts APIs. Returns
+    {"ok":True,"orgs":[...],"member_id":..} or {"ok":False,"error":..,"stage":..}
+    (stage = profile / discovery). An empty `orgs` with ok=True means the
+    account has an ADO profile but belongs to no organizations."""
+    import httpx
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        # 30s (not 15s): the vssps.* hosts intermittently take >15s on the TLS
+        # handshake from inside Docker Desktop's NAT — a 15s cap surfaced as a
+        # spurious "discovery failed" on an otherwise-good run.
+        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+            pr = await client.get(
+                "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
+                headers=headers)
+            if pr.status_code != 200:
+                return {"ok": False,
+                        "error": f"ADO profile lookup failed (HTTP {pr.status_code}) — "
+                        "the token may lack ADO access, or the account has no ADO profile.",
+                        "stage": "profile", "status_code": pr.status_code,
+                        "token_source": token_source}
+            member_id = pr.json().get("publicAlias") or pr.json().get("id")
+            ar = await client.get(
+                f"https://app.vssps.visualstudio.com/_apis/accounts?memberId={member_id}&api-version=7.1",
+                headers=headers)
+            orgs = ([a.get("accountName") for a in ar.json().get("value", [])
+                     if a.get("accountName")] if ar.status_code == 200 else [])
+    except Exception as e:
+        # vssps occasionally throws a bare connect/read error (empty str) —
+        # include the exception type so a transient blip is distinguishable.
+        append_log("warn", "auth_proxy",
+                   f"ADO_DISCOVERY_FAILED {type(e).__name__}: {e}")
+        return {"ok": False,
+                "error": f"ADO org discovery failed ({type(e).__name__}: {e}) — "
+                "often transient, retry; or supply `organization` explicitly.",
+                "stage": "discovery", "token_source": token_source}
+    return {"ok": True, "orgs": orgs, "member_id": member_id,
+            "token_source": token_source}
+
+
+@app.post("/api/ado-orgs")
+async def api_ado_orgs(body: dict):
+    """List the Azure DevOps organizations for the account behind a token,
+    WITHOUT minting a PAT. Same token-acquisition methods as create-ado-pat
+    (provided / Phantom PRT / ROPC). Read-only vssps accounts lookup — but note
+    a ROPC/device-code acquisition still creates an Azure AD sign-in log entry;
+    a captured/provided token does not."""
+    from backend.shared import get_config_value as _gcv
+    if not _gcv("enable_token_testing", True):
+        return {"ok": False, "error": "Token testing disabled "
+                "(enable_token_testing=false). Enable in Configuration."}
+    tok_res = await _acquire_ado_token(body)
+    if not tok_res.get("ok"):
+        return tok_res
+    disc = await _discover_ado_orgs(tok_res["token"], tok_res["token_source"])
+    if not disc.get("ok"):
+        return disc
+    append_log("info", "auth_proxy",
+               f"ADO_ORGS_LISTED n={len(disc['orgs'])} via {tok_res['token_source']}")
+    return {"ok": True, "organizations": disc["orgs"],
+            "member_id": disc.get("member_id"),
+            "token_source": tok_res["token_source"]}
+
+
 @app.post("/api/create-ado-pat")
 async def api_create_ado_pat(body: dict):
     """Mint a long-lived Azure DevOps Personal Access Token from captured
@@ -1783,73 +1881,25 @@ async def api_create_ado_pat(body: dict):
                 "This creates Azure AD sign-in log entries and a real PAT. "
                 "Enable in Configuration."}
     import datetime
-    import httpx
+    import httpx  # used by step 3 (PAT creation POST)
 
     # --- 1. acquire an ADO-scoped AAD token -------------------------------
-    _sid = (body.get("site_id") or "").strip()
-    token = (body.get("access_token") or "").strip()
-    token_source = "provided"
-    if not token and body.get("use_phantom_prt"):
-        prt_res = await _ado_token_from_phantom_prt(
-            (body.get("prt_path") or "").strip())
-        if not prt_res.get("ok"):
-            prt_res["stage"] = "phantom_prt"
-            return prt_res
-        token = prt_res["access_token"]
-        token_source = "phantom_prt"
-    if not token:
-        username = (body.get("username") or "").strip()
-        password = body.get("password") or ""
-        if not username or not password:
-            return {"error": "username and password required (or supply access_token)"}
-        tenant = (body.get("tenant_id") or "organizations").strip()
-        client_id = (body.get("client_id") or _AZ_CLI_CLIENT_ID).strip()
-        ropc = await _ropc_grant(username, password, tenant, client_id,
-                                 f"{_ADO_RESOURCE_ID}/.default",
-                                 site_id=_sid, tool="adopat")
-        if not ropc.get("ok"):
-            # Surface the ROPC failure verbatim (incl. aadsts_code) so the UI
-            # renders it as the finding, exactly like the ROPC panel does.
-            ropc["stage"] = "ropc"
-            return ropc
-        token = ropc.get("access_token") or ""
-        token_source = "ropc"
-
+    tok_res = await _acquire_ado_token(body)
+    if not tok_res.get("ok"):
+        # Failure dict already carries "stage"/aadsts_code — surface verbatim.
+        return tok_res
+    token = tok_res["token"]
+    token_source = tok_res["token_source"]
     headers = {"Authorization": f"Bearer {token}"}
 
     # --- 2. resolve the target org ----------------------------------------
     organization = (body.get("organization") or "").strip()
     discovered_orgs: list[str] = []
     if not organization:
-        try:
-            # 30s (not the 15s used for the fast Microsoft login endpoint):
-            # the vssps.* hosts intermittently take >15s on the TLS handshake
-            # from inside Docker Desktop's NAT — confirmed live, a 15s cap
-            # surfaced as a spurious "discovery failed" on an otherwise-good run.
-            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-                pr = await client.get(
-                    "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
-                    headers=headers)
-                if pr.status_code != 200:
-                    return {"error": f"ADO profile lookup failed (HTTP {pr.status_code}) — "
-                            "the token may lack ADO access, or the account has no ADO profile.",
-                            "stage": "profile", "status_code": pr.status_code,
-                            "token_source": token_source}
-                member_id = pr.json().get("publicAlias") or pr.json().get("id")
-                ar = await client.get(
-                    f"https://app.vssps.visualstudio.com/_apis/accounts?memberId={member_id}&api-version=7.1",
-                    headers=headers)
-                if ar.status_code == 200:
-                    discovered_orgs = [a.get("accountName") for a in ar.json().get("value", []) if a.get("accountName")]
-        except Exception as e:
-            # The vssps endpoints occasionally throw a bare connect/read
-            # error (empty str) — include the exception type so a transient
-            # network blip is distinguishable from a real failure on retry.
-            append_log("warn", "auth_proxy",
-                       f"ADO_DISCOVERY_FAILED {type(e).__name__}: {e}")
-            return {"error": f"ADO org discovery failed ({type(e).__name__}: {e}) — "
-                    "often transient, retry; or supply `organization` explicitly.",
-                    "stage": "discovery", "token_source": token_source}
+        disc = await _discover_ado_orgs(token, token_source)
+        if not disc.get("ok"):
+            return disc
+        discovered_orgs = disc["orgs"]
         if not discovered_orgs:
             return {"error": "No Azure DevOps organizations found for this account. "
                     "Supply `organization` explicitly if you know one.",
@@ -7735,6 +7785,7 @@ function renderAdoPatPanel(d,siteId){
         <label style="color:#94a3b8;font-size:13px;margin-left:6px">Valid days</label>
         <input id="adopat-days-${siteId}" class="cfg-input" type="number" min="1" max="365" style="width:72px;font-size:13px" value="90">
         <label style="color:#94a3b8;font-size:13px;margin-left:6px;display:flex;align-items:center;gap:4px" title="allOrgs=true issues a PAT valid against every org the identity can reach"><input type="checkbox" id="adopat-allorgs-${siteId}"> all orgs</label>
+        <button id="adopat-orgs-${siteId}" class="btn" style="padding:3px 12px;font-size:13px;background:#1e3a5f" onclick="adoOrgsGo('${siteId}')" title="List the account's Azure DevOps organizations (vssps accounts API) with the selected method's token — no PAT is created">☰ List ADO orgs</button>
         <button id="adopat-go-${siteId}" class="btn" style="padding:3px 12px;font-size:13px;background:#7f1d1d;border-color:#991b1b;color:#fecaca" onclick="adoPatGo('${siteId}')">▶ Create</button>
       </div>
       <div style="color:#78859b;font-size:11px;margin-bottom:6px">
@@ -8791,8 +8842,58 @@ function adoPatGo(siteId){
   if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
   return _adoPatCreate(siteId,{username:user,password:pass},'ROPC → ADO token → discover org → create PAT…');
 }
+// List ADO orgs — same method dispatch as adoPatGo, but discovery-only.
+function adoOrgsGo(siteId){
+  const out=document.getElementById('adopat-result-'+siteId);
+  const m=document.getElementById('adopat-method-'+siteId)?.value||'ropc';
+  if(m==='devicecode') return adoPatDeviceCode(siteId,tok=>_adoOrgsList(siteId,{access_token:tok},'device-code token → list ADO orgs…'));
+  if(m==='phantomprt'){
+    const pp=(document.getElementById('adopat-prtpath-'+siteId)?.value||'').trim();
+    return _adoOrgsList(siteId,{use_phantom_prt:true,prt_path:pp},'phantom PRT → ADO token → list orgs…');
+  }
+  if(m==='captured'){
+    const tok=(document.getElementById('adopat-token-'+siteId)?.value||'').trim();
+    if(!tok){out.innerHTML='<div style="color:#f87171">paste an ADO-audience access token</div>';return}
+    return _adoOrgsList(siteId,{access_token:tok},'captured token → list ADO orgs…');
+  }
+  const user=(document.getElementById('adopat-user-'+siteId)?.value||'').trim();
+  const pass=document.getElementById('adopat-pass-'+siteId)?.value||'';
+  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
+  return _adoOrgsList(siteId,{username:user,password:pass},'ROPC → ADO token → list orgs…');
+}
+async function _adoOrgsList(siteId, creds, statusMsg){
+  const out=document.getElementById('adopat-result-'+siteId);
+  const tid=(document.getElementById('adopat-tid-'+siteId)?.value||'').trim()||'organizations';
+  out.innerHTML='<div style="color:#94a3b8">'+esc(statusMsg||'listing ADO orgs…')+'</div>';
+  try{
+    const body=Object.assign({site_id:siteId,tenant_id:tid}, creds||{});
+    const r=await apiFetch('/api/ado-orgs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!d.ok){
+      if(d.aadsts_code){
+        out.innerHTML=`<div style="color:#fbbf24;margin-bottom:4px">✗ ${esc(d.aadsts_code)} — CA/MFA blocked the ADO token grant (may be the expected outcome)</div><div style="color:#94a3b8;font-size:12px">${esc(d.error_description||d.error||'')}</div>`;
+      }else{
+        out.innerHTML=`<div style="color:#f87171">✗ ${esc(d.stage||'error')}: ${esc(d.error||'failed')}</div>`;
+      }
+      return;
+    }
+    const orgs=d.organizations||[];
+    if(!orgs.length){
+      out.innerHTML=`<div style="color:#fbbf24">No Azure DevOps organizations found for this account.</div><div style="color:#78859b;font-size:12px">via ${esc(d.token_source||'?')}</div>`;
+      return;
+    }
+    const rows=orgs.map(o=>`<div style="display:flex;gap:8px;align-items:center;padding:3px 0;border-bottom:1px solid #1e293b">
+      <code style="color:#7dd3fc;font-size:13px;min-width:160px">${esc(o)}</code>
+      <span style="color:#64748b;font-size:12px;flex:1">dev.azure.com/${esc(o)}</span>
+      <button class="btn" style="padding:1px 10px;font-size:11px;background:#1e3a5f" data-o="${esc(o)}" onclick="const el=document.getElementById('adopat-org-${siteId}');if(el)el.value=this.dataset.o">Use</button>
+    </div>`).join('');
+    out.innerHTML=`<div style="color:#4ade80;margin-bottom:4px">✓ ${orgs.length} Azure DevOps org${orgs.length===1?'':'s'} — via ${esc(d.token_source||'?')}</div>${rows}<div style="color:#78859b;font-size:11px;margin-top:4px">Click <b>Use</b> to drop an org into the ADO org field above, then Create a PAT scoped to it.</div>`;
+  }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
+}
 // Device-code flow: start, show the code, poll until signed in, then mint.
-async function adoPatDeviceCode(siteId){
+async function adoPatDeviceCode(siteId, onToken){
+  // onToken(access_token) overrides the default action (mint a PAT) — used by
+  // "List ADO orgs" to reuse the same interactive device-code sign-in.
   const out=document.getElementById('adopat-result-'+siteId);
   const tid=(document.getElementById('adopat-tid-'+siteId)?.value||'').trim()||'organizations';
   out.innerHTML='<div style="color:#94a3b8">requesting device code…</div>';
@@ -8819,7 +8920,10 @@ async function adoPatDeviceCode(siteId){
     try{
       const r=await apiFetch('/api/ado-devicecode/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:tid,client_id:cid,device_code:dc,site_id:siteId,tool:'adopat'})});
       const d=await r.json();
-      if(d.ok&&d.access_token){st.innerHTML='<span style="color:#4ade80">✓ signed in — minting PAT…</span>';return _adoPatCreate(siteId,{access_token:d.access_token},'device-code token → discover org → create PAT…');}
+      if(d.ok&&d.access_token){
+        if(onToken){st.innerHTML='<span style="color:#4ade80">✓ signed in</span>';return onToken(d.access_token);}
+        st.innerHTML='<span style="color:#4ade80">✓ signed in — minting PAT…</span>';return _adoPatCreate(siteId,{access_token:d.access_token},'device-code token → discover org → create PAT…');
+      }
       if(d.pending){if(d.slow_down)poll+=5000;setTimeout(tick,poll);return}
       st.innerHTML='<span style="color:#f87171">✗ '+esc(d.aadsts_code||d.error||'failed')+'</span>';
     }catch(e){setTimeout(tick,poll);}

@@ -792,10 +792,11 @@ detects these CA codes and returns that guidance inline.
 | Piece | Where |
 |---|---|
 | Endpoint | `POST /api/create-ado-pat` (accepts `username`/`password`, or `access_token`) |
+| List orgs | `POST /api/ado-orgs` (1.45.0) — discovery-only: acquires an ADO token by the selected method (`_acquire_ado_token()`) then returns `organizations[]` via `_discover_ado_orgs()` (the vssps profile + accounts APIs), **without** minting a PAT. The **☰ List ADO orgs** button reuses the same method dispatch as Create; each result has a **Use** button that fills the ADO org field. `create-ado-pat` now shares these two helpers for its token + org-discovery steps. |
 | Device-code | `POST /api/ado-devicecode/start` + `POST /api/ado-devicecode/poll` — start returns the `user_code`/`verification_uri`; the panel polls on the server interval, then feeds the token into create-ado-pat. Uses the Azure CLI public client (pre-consented for the ADO resource). |
-| UI | `renderAdoPatPanel()` + `adoPatMethodChange()`/`adoPatGo()`/`_adoPatCreate()`/`adoPatDeviceCode()` |
+| UI | `renderAdoPatPanel()` + `adoPatMethodChange()`/`adoPatGo()`/`_adoPatCreate()`/`adoPatDeviceCode()`; `adoOrgsGo()`/`_adoOrgsList()` for the org listing |
 | Shared token step (ROPC) | `_ropc_grant()` — same helper `/api/test-ropc` uses, so a blocked grant surfaces the AADSTS code identically |
-| nginx | `location = /api/create-ado-pat` and `location /api/ado-devicecode/` in `nginx/rtvbitm` (dashboard-exclusive `:8092` routes — see the CLAUDE.md rule) |
+| nginx | `location = /api/create-ado-pat`, `location = /api/ado-orgs`, and `location /api/ado-devicecode/` in `nginx/rtvbitm` (dashboard-exclusive `:8092` routes — see the CLAUDE.md rule) |
 | Gate | `enable_token_testing` (creates a real AAD sign-in log entry **and** a real, listable PAT in the target org) |
 
 Body: `{username?, password?, tenant_id?, access_token?, client_id?,
