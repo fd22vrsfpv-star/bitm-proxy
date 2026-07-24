@@ -846,14 +846,16 @@ just a feature list.
 | Content | Static HTML, no new backend route — each attack is an `.attack-card` block with a goal line and numbered steps |
 | Card titles | Each card's `<h3>` title is a link to where the attack lives in the dashboard — `docsGoTab('creds'|'phantom'|'auth-proxy'|'keepalive-log')` for `:8092` tabs, or a `target="_blank"` link to `:8091`/the demo page for browser-driven ones (1.26.0) |
 
-Covers: push notification auto-click (Path A), passkey dead-end detection,
-silent drive-by fingerprinting, Phantom Join device-code CA bypass (Path
-B), the ROPC test above, the ADO PAT minting above, credential injection
-via the auth proxy, token keepalive/persistence, and the lander
-credential-capture page. Each entry names the real tab/button/field to
-click, not a paraphrase, and its title links straight to that tab —
-update this list (and the title link target) alongside any change to
-those controls' labels or ids.
+Covers (11 cards): push notification auto-click (Path A), passkey dead-end
+detection, silent drive-by fingerprinting, Phantom Join device-code CA
+bypass (Path B), the ROPC test above, the ADO PAT minting above (all four
+acquisition methods — ROPC / device-code / Phantom PRT / captured token —
+plus **☰ List ADO orgs**), Graph API recon via the **Graph:** dropdown,
+Graph-permission abuse via the **AAA** runner, credential injection via the
+auth proxy, token keepalive/persistence, and the lander credential-capture
+page. Each entry names the real tab/button/field to click, not a paraphrase,
+and its title links straight to that tab — update this list (and the title
+link target) alongside any change to those controls' labels or ids.
 
 ---
 

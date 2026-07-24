@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.46.1")
+app = FastAPI(title="BITM Proxy Debug", version="1.47.0")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -5949,19 +5949,48 @@ curl -sI http://127.0.0.1:8080/</pre>
 
   <div class="attack-card">
     <h3><a href="#" onclick="return docsGoTab('creds')">6. Create an Azure DevOps PAT (persistence)</a><span class="portal-arrow">→ Captured Data tab</span></h3>
-    <p class="attack-goal">Goal: turn captured creds into a long-lived Azure DevOps Personal Access Token — durable credential material that survives the victim's password reset and usually sits outside the CA/MFA re-evaluation that gates interactive sign-in.</p>
+    <p class="attack-goal">Goal: turn a captured identity into a long-lived Azure DevOps Personal Access Token — durable credential material that survives the victim's password reset and usually sits outside the CA/MFA re-evaluation that gates interactive sign-in.</p>
     <ol>
-      <li>Open <b>Captured Data</b> tab, find the card for a site where credentials were captured.</li>
-      <li>Click <b>Create ADO PAT…</b> on that card (directly below Test ROPC).</li>
-      <li>User/password auto-fill from captured input; set <b>Tenant</b> (<code>organizations</code> or a tenant GUID/domain). Leave <b>ADO org</b> blank to auto-discover the account's org(s), or name one.</li>
-      <li>Pick a <b>Scope</b> (<code>app_token</code> = full access, or a space-delimited list like <code>vso.code vso.build</code>), <b>Valid days</b>, and optionally <b>all orgs</b>. Click Create.</li>
-      <li>A blocked ROPC grant surfaces the <code>AADSTS</code> code as the finding (control working). A minted PAT is returned with a Copy button — this is a real, listable token in the target org.</li>
+      <li>Open <b>Captured Data</b> tab, find the card for a site where credentials were captured, and click <b>Create ADO PAT…</b> (directly below Test ROPC) to open the panel.</li>
+      <li>Pick the <b>Method</b> that acquires the ADO-audience token:
+        <ul>
+          <li><b>ROPC</b> (default) — password grant; fails on an MFA/CA-blocked tenant.</li>
+          <li><b>Device code</b> — interactive; complete sign-in at <code>microsoft.com/devicelogin</code> (satisfies basic MFA), then the PAT is minted automatically.</li>
+          <li><b>Phantom PRT</b> — exchange a <code>roadtx.prt</code> from a completed <b>Phantom Join</b> run (attack #4) for an ADO token via <code>roadtx prtauth</code>; the path that works when device-code/ROPC are CA-blocked, since the PRT carries device claims.</li>
+          <li><b>Captured token</b> — paste an existing ADO-audience token (<code>aud = 499b84ac-…</code>).</li>
+        </ul>
+      </li>
+      <li>Set <b>Tenant</b> (<code>organizations</code> or a tenant GUID/domain). The <b>ADO org</b> field pre-fills from <b>Settings → Azure / ADO defaults → default ado org</b> when set; leave it blank to auto-discover, or click <b>☰ List ADO orgs</b> to enumerate the account's orgs (via the vssps accounts API, no PAT minted) and hit <b>Use</b> to drop one in.</li>
+      <li>Pick a <b>Scope</b> (<code>app_token</code> = full access, or a space-delimited list like <code>vso.code vso.build</code>), <b>Valid days</b>, and optionally <b>all orgs</b>. Click <b>▶ Create</b>.</li>
+      <li>A blocked token grant surfaces the <code>AADSTS</code> code as the finding (control working). A minted PAT is returned with a Copy button — a real, listable token in the target org, tagged with the method it was acquired by.</li>
       <li><b>Cleanup:</b> revoke the PAT from Azure DevOps → User settings → Personal access tokens (the panel shows its <code>authorizationId</code>).</li>
     </ol>
   </div>
 
   <div class="attack-card">
-    <h3><a href="#" onclick="return docsGoTab('auth-proxy')">7. Credential injection via the auth proxy (:3128)</a><span class="portal-arrow">→ Proxy Traffic tab</span></h3>
+    <h3><a href="#" onclick="return docsGoTab('creds')">7. Graph API recon with a captured token</a><span class="portal-arrow">→ Captured Data tab</span></h3>
+    <p class="attack-goal">Goal: with a captured Graph-audience token, map what the identity can reach — read-only enumeration of the tenant via Microsoft Graph. Every call lands in the Azure AD sign-in logs, so this is loud by design.</p>
+    <ol>
+      <li>Open <b>Captured Data</b> and expand the card for a site with a captured token.</li>
+      <li>In the <b>Graph:</b> row, pick a call from the dropdown — <b>Who am I</b> (<code>/me</code>), <b>My groups &amp; roles</b>, <b>Directory users</b>, <b>Groups</b>, <b>Service principals</b>, <b>App registrations</b>, <b>Directory roles</b>, <b>Role assignments</b>, <b>Conditional Access policies</b>, <b>All devices</b>, <b>Intune managed devices</b> — or type a custom Graph URL in the override box.</li>
+      <li>Click <b>Run</b>. The response renders inline and is recorded as a <span style="color:#4ade80">🧪 Graph</span> flow trace (selectable in <b>Flow Trace</b> / send-to-LLM).</li>
+      <li>A <code>200</code> means the token holds that scope; <code>401</code>/<code>403</code> means it doesn't. Audience matters — a <b>Graph</b> token returns a profile error against ADO/vssps and vice-versa.</li>
+    </ol>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="#" onclick="return docsGoTab('creds')">8. Abuse Graph API permissions (AAA)</a><span class="portal-arrow">→ Captured Data tab</span></h3>
+    <p class="attack-goal">Goal: drive Hagrid29's <code>AbuseAzureAPIPermissions.ps1</code> recon/abuse functions through <code>pwsh</code> with a captured Graph token — enumerate, and (if explicitly enabled) abuse, the Graph API permissions the identity holds.</p>
+    <ol>
+      <li>Open <b>Captured Data</b>, expand a card, and in the <b>AAA:</b> row click <b>Run function…</b>.</li>
+      <li>Pick a <b>Function</b> from the dropdown, choose the <b>Token</b> to run it with, and add PowerShell-style <b>Args</b> (e.g. <code>-UserId 'alice@example.com' -Search 'finance'</code>).</li>
+      <li>Click <b>Run</b> — output renders inline and is recorded as a <span style="color:#4ade80">🧪 AAA</span> flow trace.</li>
+    </ol>
+    <div class="hint">Recon-only by default. Destructive functions must be added to <code>aaa_runner.allowed_functions</code> in <code>$DATA_DIR/sites.yaml</code> before they can run. Every call lands in the Azure AD sign-in logs.</div>
+  </div>
+
+  <div class="attack-card">
+    <h3><a href="#" onclick="return docsGoTab('auth-proxy')">9. Credential injection via the auth proxy (:3128)</a><span class="portal-arrow">→ Proxy Traffic tab</span></h3>
     <p class="attack-goal">Goal: replay a previously captured session's cookies/tokens transparently through the BITM proxy into new outbound requests — turning a one-time capture into ongoing access.</p>
     <ol>
       <li>Open the <b>Proxy</b> tab, click <b>Start Proxy</b>.</li>
@@ -5972,7 +6001,7 @@ curl -sI http://127.0.0.1:8080/</pre>
   </div>
 
   <div class="attack-card">
-    <h3><a href="#" onclick="return docsGoTab('keepalive-log')">8. Token keepalive / persistence</a><span class="portal-arrow">→ Keep-Alive tab</span></h3>
+    <h3><a href="#" onclick="return docsGoTab('keepalive-log')">10. Token keepalive / persistence</a><span class="portal-arrow">→ Keep-Alive tab</span></h3>
     <p class="attack-goal">Goal: show a captured refresh token being silently exercised on a schedule to stay valid well past normal expiry, without re-triggering CA/MFA.</p>
     <ol>
       <li>Open the <b>Keep-Alive</b> tab and enable keepalive for a captured session (Settings → Keep-Alive subtab has the interval).</li>
@@ -5982,7 +6011,7 @@ curl -sI http://127.0.0.1:8080/</pre>
   </div>
 
   <div class="attack-card">
-    <h3><a href="http://${host}:8091/lander.html" target="_blank" rel="noopener noreferrer">9. Lander credential-capture page</a><span class="portal-arrow">↗ /lander page · results in Captured Data</span></h3>
+    <h3><a href="http://${host}:8091/lander.html" target="_blank" rel="noopener noreferrer">11. Lander credential-capture page</a><span class="portal-arrow">↗ /lander page · results in Captured Data</span></h3>
     <p class="attack-goal">Goal: a believable-looking login page that harvests submitted credentials directly via <code>POST /api/capture/external</code>, for pretexting scenarios where driving a real browser session isn't the goal.</p>
     <ol>
       <li>Send the target to <code>/lander</code> (redirects to <code>lander.html</code>) — same-origin under <code>:8091</code>, or the lab's public <code>/lander</code> alias.</li>
