@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.47.0")
+app = FastAPI(title="BITM Proxy Debug", version="1.47.1")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -1723,6 +1723,14 @@ async def _ado_token_from_phantom_prt(prt_path: str = "") -> dict:
             stdout=_a.subprocess.PIPE, stderr=_a.subprocess.PIPE)
         out_b, err_b = await _a.wait_for(proc.communicate(), timeout=60)
     except _a.TimeoutError:
+        # wait_for cancels the await but does NOT kill the child — a hung
+        # roadtx (enrich prompt, network stall) would leak a live process.
+        # Same pattern as aaa_runner.py's timeout handling.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
         return {"ok": False, "error": "roadtx prtauth timed out (60s)"}
     except Exception as e:
         return {"ok": False, "error": f"roadtx prtauth failed to launch: {e}"}
@@ -1877,7 +1885,8 @@ async def api_create_ado_pat(body: dict):
     a real, listable PAT in the target org)."""
     from backend.shared import get_config_value as _gcv
     if not _gcv("enable_token_testing", True):
-        return {"error": "Token testing disabled (enable_token_testing=false). "
+        return {"ok": False,
+                "error": "Token testing disabled (enable_token_testing=false). "
                 "This creates Azure AD sign-in log entries and a real PAT. "
                 "Enable in Configuration."}
     import datetime
@@ -1908,7 +1917,8 @@ async def api_create_ado_pat(body: dict):
             return disc
         discovered_orgs = disc["orgs"]
         if not discovered_orgs:
-            return {"error": "No Azure DevOps organizations found for this account. "
+            return {"ok": False,
+                    "error": "No Azure DevOps organizations found for this account. "
                     "Supply `organization` explicitly if you know one.",
                     "stage": "discovery", "token_source": token_source}
         organization = discovered_orgs[0]
@@ -1941,8 +1951,8 @@ async def api_create_ado_pat(body: dict):
         _record_test_flow(_sid, "adopat", "POST", url,
                           {"Authorization": "Bearer <ADO-token>", "Content-Type": "application/json"},
                           _json.dumps(pat_body), 0, {}, f"error: {e}")
-        return {"error": str(e), "stage": "create", "organization": organization,
-                "token_source": token_source}
+        return {"ok": False, "error": str(e), "stage": "create",
+                "organization": organization, "token_source": token_source}
     _record_test_flow(_sid, "adopat", "POST", url,
                       {"Authorization": "Bearer <ADO-token>", "Content-Type": "application/json"},
                       _json.dumps(pat_body), resp.status_code, dict(resp.headers), resp_text)
@@ -8864,42 +8874,39 @@ async function _adoPatCreate(siteId, creds, statusMsg){
   }catch(e){out.innerHTML='<div style="color:#f87171">Error: '+esc(e.message)+'</div>'}
 }
 // Dispatch on the selected method.
-function adoPatGo(siteId){
+// Resolve the selected ADO acquisition method into a creds object shared by
+// Create and List-orgs. Returns {devicecode:true}, {creds, how} for the
+// token-bearing methods, or null after painting the field-validation error.
+function _adoResolveCreds(siteId){
   const out=document.getElementById('adopat-result-'+siteId);
   const m=document.getElementById('adopat-method-'+siteId)?.value||'ropc';
-  if(m==='devicecode') return adoPatDeviceCode(siteId);
+  if(m==='devicecode') return {devicecode:true};
   if(m==='phantomprt'){
     const pp=(document.getElementById('adopat-prtpath-'+siteId)?.value||'').trim();
-    return _adoPatCreate(siteId,{use_phantom_prt:true,prt_path:pp},'phantom PRT → roadtx prtauth → ADO token → create PAT…');
+    return {creds:{use_phantom_prt:true,prt_path:pp}, how:'phantom PRT → ADO token'};
   }
   if(m==='captured'){
     const tok=(document.getElementById('adopat-token-'+siteId)?.value||'').trim();
-    if(!tok){out.innerHTML='<div style="color:#f87171">paste an ADO-audience access token</div>';return}
-    return _adoPatCreate(siteId,{access_token:tok},'captured token → discover org → create PAT…');
+    if(!tok){out.innerHTML='<div style="color:#f87171">paste an ADO-audience access token</div>';return null}
+    return {creds:{access_token:tok}, how:'captured token'};
   }
   const user=(document.getElementById('adopat-user-'+siteId)?.value||'').trim();
   const pass=document.getElementById('adopat-pass-'+siteId)?.value||'';
-  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
-  return _adoPatCreate(siteId,{username:user,password:pass},'ROPC → ADO token → discover org → create PAT…');
+  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return null}
+  return {creds:{username:user,password:pass}, how:'ROPC → ADO token'};
+}
+function adoPatGo(siteId){
+  const r=_adoResolveCreds(siteId);
+  if(!r) return;
+  if(r.devicecode) return adoPatDeviceCode(siteId);
+  return _adoPatCreate(siteId, r.creds, r.how+' → discover org → create PAT…');
 }
 // List ADO orgs — same method dispatch as adoPatGo, but discovery-only.
 function adoOrgsGo(siteId){
-  const out=document.getElementById('adopat-result-'+siteId);
-  const m=document.getElementById('adopat-method-'+siteId)?.value||'ropc';
-  if(m==='devicecode') return adoPatDeviceCode(siteId,tok=>_adoOrgsList(siteId,{access_token:tok},'device-code token → list ADO orgs…'));
-  if(m==='phantomprt'){
-    const pp=(document.getElementById('adopat-prtpath-'+siteId)?.value||'').trim();
-    return _adoOrgsList(siteId,{use_phantom_prt:true,prt_path:pp},'phantom PRT → ADO token → list orgs…');
-  }
-  if(m==='captured'){
-    const tok=(document.getElementById('adopat-token-'+siteId)?.value||'').trim();
-    if(!tok){out.innerHTML='<div style="color:#f87171">paste an ADO-audience access token</div>';return}
-    return _adoOrgsList(siteId,{access_token:tok},'captured token → list ADO orgs…');
-  }
-  const user=(document.getElementById('adopat-user-'+siteId)?.value||'').trim();
-  const pass=document.getElementById('adopat-pass-'+siteId)?.value||'';
-  if(!user||!pass){out.innerHTML='<div style="color:#f87171">user and password are both required</div>';return}
-  return _adoOrgsList(siteId,{username:user,password:pass},'ROPC → ADO token → list orgs…');
+  const r=_adoResolveCreds(siteId);
+  if(!r) return;
+  if(r.devicecode) return adoPatDeviceCode(siteId, tok=>_adoOrgsList(siteId,{access_token:tok},'device-code token → list ADO orgs…'));
+  return _adoOrgsList(siteId, r.creds, r.how+' → list orgs…');
 }
 async function _adoOrgsList(siteId, creds, statusMsg){
   const out=document.getElementById('adopat-result-'+siteId);

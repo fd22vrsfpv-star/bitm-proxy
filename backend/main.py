@@ -12,7 +12,7 @@ from backend.routes import browser, sessions, devices, capture
 from backend.shared import get_config
 from backend.auth import APIKeyMiddleware
 
-app = FastAPI(title="BITM Proxy", version="1.47.0")
+app = FastAPI(title="BITM Proxy", version="1.47.1")
 
 app.add_middleware(APIKeyMiddleware)
 
