@@ -51,6 +51,10 @@ docs/screenshots/*
 !docs/screenshots/flow-trace.png
 !docs/screenshots/index.png
 !docs/screenshots/all-logs.png
+!docs/screenshots/captured-data-attacks.png
+!docs/screenshots/test-attacks-playbook.png
+!docs/screenshots/flow-trace-test-timestamp.png
+!docs/screenshots/settings-ado-defaults.png
 
 # Data (runtime)
 *.log
