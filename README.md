@@ -18,9 +18,9 @@ in one process tree.
 ## Dashboard
 
 The control-plane dashboard on `:8092` surfaces everything the proxy and
-the hosted browser session capture. The screenshots below are from the DEF
-CON RTV lab against a disposable test tenant — tenant identifiers and token
-previews are redacted.
+the hosted browser session capture. The screenshots below are from a
+disposable test tenant — tenant identifiers and token values are synthetic
+or redacted.
 
 ### Captured Data
 
