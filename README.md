@@ -36,6 +36,15 @@ Expand a record to replay captured tokens against Microsoft Graph, run a
 or mint an **Azure DevOps PAT** straight from captured creds — each a
 one-click test with the result inline.
 
+![Captured Data — token-level attack panels](docs/screenshots/captured-data-attacks.png)
+
+Each captured identity drives one-click, token-level attacks: **Graph API
+recon** (a dropdown of read-only Microsoft Graph calls — `/me`, directory
+users/groups, service principals, Conditional Access policies, devices…),
+**Create ADO PAT** with a method selector (ROPC / device-code / Phantom PRT /
+captured token) plus **☰ List ADO orgs**, and **AAA** (Abuse Azure API
+Permissions). Each run records its own 🧪 flow trace.
+
 ### Flow Trace
 
 ![Flow Trace](docs/screenshots/flow-trace.png)
@@ -43,6 +52,12 @@ one-click test with the result inline.
 The full request/response timeline for a login, auto-grouped into milestones
 (LOGIN → TOKENS → REFRESH → BEARER). Click any exchange for its headers and
 body; tracked values are tainted and followed across requests.
+
+![Flow Trace — dashboard-test trace](docs/screenshots/flow-trace-test-timestamp.png)
+
+Every dashboard-driven attack (ROPC, Graph, ADO PAT, AAA…) records its own
+🧪 trace, labeled with the tool and the time it ran, so each is selectable
+here and can be sent to the local LLM or exported to RAG/Burp.
 
 ### Index
 
@@ -59,6 +74,24 @@ where each value appears.
 The live event stream — captures, token issuance/refresh, requests, and MFA
 challenges. Captured inputs are masked and token values redacted in the UI
 by default.
+
+### Test Attacks playbook
+
+![Test Attacks playbook](docs/screenshots/test-attacks-playbook.png)
+
+The **Docs → Test Attacks** tab is a step-by-step runbook for every
+attack/demo the tool drives, written against the real dashboard controls —
+push auto-click, passkey dead-end, silent fingerprinting, Phantom Join CA
+bypass, ROPC, ADO PAT, Graph recon, AAA, proxy injection, keepalive, and the
+lander.
+
+### Settings — Azure / ADO defaults
+
+![Settings — Azure / ADO defaults](docs/screenshots/settings-ado-defaults.png)
+
+Set the default tenant and Azure DevOps org once; the ADO PAT panel pre-fills
+the org from here (blank = auto-discover the account's org(s) via the vssps
+accounts API).
 
 ---
 
