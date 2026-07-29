@@ -852,7 +852,7 @@ bypass (Path B), the ROPC test above, the ADO PAT minting above (all four
 acquisition methods — ROPC / device-code / Phantom PRT / captured token —
 plus **☰ List ADO orgs**), Graph API recon via the **Graph:** dropdown,
 Graph-permission abuse via the **AAA** runner, credential injection via the
-auth proxy, token keepalive/persistence, and the lander credential-capture
+auth proxy, the token keep-alive monitor, and the lander credential-capture
 page. Each entry names the real tab/button/field to click, not a paraphrase,
 and its title links straight to that tab — update this list (and the title
 link target) alongside any change to those controls' labels or ids.

