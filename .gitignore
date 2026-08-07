@@ -43,6 +43,11 @@ DEFCON-RTV-2025-slides.*
 docs/Grapnel-passkeys-RTV.*
 docs/IGotIn-NowWhat*.pptx
 
+# Talk recordings — 176-334 MB each, so each one is over GitHub's 100 MB
+# per-file hard limit and can't be pushed. Distributed separately; the deck
+# in rtv_talk/ is tracked.
+rtv_talk/*.mp4
+
 # Screenshots: ignore everything (raw dashboard captures carry lab-tenant
 # identifiers / tokens) EXCEPT the hand-redacted set embedded in the README.
 docs/screenshots/*
